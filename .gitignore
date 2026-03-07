@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+
+# Build output
+client/dist/
+
+# Cached AI model files
+server/data/models/
+
+# User uploads (screenshots, files)
+server/uploads/
+
+# Runtime config (contains API keys)
+server/data/config.json
+
+# macOS
+.DS_Store
+
+# WhatsApp auth session
+server/data/whatsapp-auth/
+
+# Briefing state
+server/data/briefing-seen.json
+
+# Built Electron app
+Idea Basin.app/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,11 @@
+{
+  "providers": {
+    "scan": "embedded",
+    "embedding": "embedded",
+    "tagging": "disabled"
+  },
+  "ollama": {
+    "url": "http://localhost:11434"
+  },
+  "brave_search_api_key": ""
+}

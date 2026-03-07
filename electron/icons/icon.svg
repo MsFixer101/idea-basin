@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="50%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f0a1a"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="40%">
+      <stop offset="0%" stop-color="#c084fc" stop-opacity="0.4"/>
+      <stop offset="60%" stop-color="#7c3aed" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="transparent"/>
+    </radialGradient>
+    <linearGradient id="bulb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+  <!-- Glow -->
+  <circle cx="512" cy="420" r="320" fill="url(#glow)"/>
+  <!-- Rays -->
+  <g stroke="#fbbf24" stroke-width="8" stroke-linecap="round" opacity="0.5">
+    <line x1="512" y1="160" x2="512" y2="100"/>
+    <line x1="680" y1="220" x2="720" y2="170"/>
+    <line x1="780" y1="390" x2="840" y2="370"/>
+    <line x1="344" y1="220" x2="304" y2="170"/>
+    <line x1="244" y1="390" x2="184" y2="370"/>
+    <line x1="760" y1="540" x2="810" y2="570"/>
+    <line x1="264" y1="540" x2="214" y2="570"/>
+  </g>
+  <!-- Bulb glass -->
+  <path d="M512 230 C620 230 710 320 710 430 C710 520 660 570 640 620 C625 655 620 680 620 710 L404 710 C404 680 399 655 384 620 C364 570 314 520 314 430 C314 320 404 230 512 230Z" fill="url(#bulb)" opacity="0.9"/>
+  <!-- Bulb highlight -->
+  <path d="M460 280 C420 310 380 370 380 430 C380 460 390 490 400 510" stroke="white" stroke-width="12" stroke-linecap="round" fill="none" opacity="0.35"/>
+  <!-- Filament -->
+  <path d="M460 500 Q480 460 512 480 Q544 500 540 460 Q536 420 564 450" stroke="#fef3c7" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.7"/>
+  <!-- Base/screw -->
+  <rect x="404" y="710" width="216" height="30" rx="4" fill="url(#base)"/>
+  <rect x="414" y="748" width="196" height="24" rx="4" fill="url(#base)" opacity="0.85"/>
+  <rect x="424" y="780" width="176" height="24" rx="4" fill="url(#base)" opacity="0.7"/>
+  <rect x="440" y="812" width="144" height="28" rx="14" fill="url(#base)" opacity="0.6"/>
+  <!-- Text -->
+  <text x="512" y="940" text-anchor="middle" font-family="system-ui, sans-serif" font-weight="700" font-size="72" fill="#a78bfa" opacity="0.8">IDEA BASIN</text>
+</svg>

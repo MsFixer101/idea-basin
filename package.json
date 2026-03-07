@@ -1,0 +1,34 @@
+{
+  "name": "idea-basin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Knowledge graph for organising ideas",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "cd client && npm run build",
+    "start": "npm run build && electron .",
+    "pack": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.ideabasin.app",
+    "productName": "Idea Basin",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "electron/icons/icon.icns"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "client/dist/**/*",
+      "!**/node_modules/.cache"
+    ],
+    "extraResources": [
+      { "from": "server/node_modules", "to": "server/node_modules" }
+    ]
+  }
+}
