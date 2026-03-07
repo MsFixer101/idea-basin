@@ -594,7 +594,8 @@ async function chatWithProvider(text, alias, cfg, ragContext, history, { imageBa
     console.log(`[whatsapp] No history available for this message`);
   }
   const apiKey = getApiKey(alias.provider, cfg);
-  const systemWithTools = CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
+  const modelIdentity = `You are ${alias.tag} (${alias.provider}${alias.model ? ', model: ' + alias.model : ''}). Do not pretend to be a different AI.\n\n`;
+  const systemWithTools = modelIdentity + CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
   const imageOpts = imageBase64 && imageMime ? { imageBase64, imageMime } : {};
 
   // First call — AI may respond directly or use a tool
