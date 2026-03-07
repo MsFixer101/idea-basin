@@ -2,7 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const DEFAULT_MODEL = 'gemini-2.0-flash';
 
-export async function generate(prompt, system, apiKey, model) {
+export async function generate(prompt, system, apiKey, model, { imageBase64, imageMime } = {}) {
   if (!apiKey) throw new Error('Gemini API key required');
 
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -11,7 +11,17 @@ export async function generate(prompt, system, apiKey, model) {
     systemInstruction: system,
   });
 
-  const result = await m.generateContent(prompt);
+  let content;
+  if (imageBase64 && imageMime) {
+    content = [
+      { inlineData: { mimeType: imageMime, data: imageBase64 } },
+      prompt,
+    ];
+  } else {
+    content = prompt;
+  }
+
+  const result = await m.generateContent(content);
   return result.response.text();
 }
 

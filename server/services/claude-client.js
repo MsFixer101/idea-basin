@@ -1,8 +1,18 @@
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
-export async function generate(prompt, system, apiKey, model) {
+export async function generate(prompt, system, apiKey, model, { imageBase64, imageMime } = {}) {
   if (!apiKey) throw new Error('Claude API key required');
+
+  let content;
+  if (imageBase64 && imageMime) {
+    content = [
+      { type: 'image', source: { type: 'base64', media_type: imageMime, data: imageBase64 } },
+      { type: 'text', text: prompt },
+    ];
+  } else {
+    content = prompt;
+  }
 
   const res = await fetch(CLAUDE_API_URL, {
     method: 'POST',
@@ -15,7 +25,7 @@ export async function generate(prompt, system, apiKey, model) {
       model: model || DEFAULT_MODEL,
       max_tokens: 4096,
       system,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content }],
     }),
   });
 

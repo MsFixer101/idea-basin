@@ -154,27 +154,39 @@ const PROVIDER_LABELS = {
   qwen: 'Qwen',
 };
 
-async function callProvider(provider, model, prompt, system, apiKey, cfg) {
+async function callProvider(provider, model, prompt, system, apiKey, cfg, { imageBase64, imageMime } = {}) {
+  const imageOpts = imageBase64 && imageMime ? { imageBase64, imageMime } : {};
   switch (provider) {
     case 'claude-cli':
+      // Claude CLI doesn't support vision
       return callClaude(prompt, system);
     case 'claude':
-      return claudeClient.generate(prompt, system, apiKey, model || undefined);
+      return claudeClient.generate(prompt, system, apiKey, model || undefined, imageOpts);
     case 'gemini':
-      return geminiClient.generate(prompt, system, apiKey, model || undefined);
+      return geminiClient.generate(prompt, system, apiKey, model || undefined, imageOpts);
     case 'grok':
+      if (imageBase64) {
+        // Grok uses OpenAI-compatible API — pass image through
+        const baseUrl = PROVIDER_API_BASES['grok'];
+        return openaiClient.generate(prompt, system, apiKey, model || undefined, baseUrl, imageOpts);
+      }
       return grokWithSearch(prompt, system, apiKey, model);
     case 'ollama': {
       const ollamaUrl = (cfg?.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+      const messages = [
+        { role: 'system', content: system },
+      ];
+      if (imageBase64) {
+        messages.push({ role: 'user', content: prompt, images: [imageBase64] });
+      } else {
+        messages.push({ role: 'user', content: prompt });
+      }
       const res = await fetch(`${ollamaUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: model || 'llama3.2',
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: prompt },
-          ],
+          messages,
           stream: false,
         }),
       });
@@ -186,7 +198,7 @@ async function callProvider(provider, model, prompt, system, apiKey, cfg) {
     case 'kimi':
     case 'qwen': {
       const baseUrl = PROVIDER_API_BASES[provider];
-      return openaiClient.generate(prompt, system, apiKey, model || undefined, baseUrl);
+      return openaiClient.generate(prompt, system, apiKey, model || undefined, baseUrl, imageOpts);
     }
     default:
       throw new Error(`Unknown provider: ${provider}`);
@@ -554,7 +566,7 @@ async function summarizeWithProvider(url, alias, cfg) {
   return `Could not fetch content from ${url}`;
 }
 
-async function chatWithProvider(text, alias, cfg, ragContext, history) {
+async function chatWithProvider(text, alias, cfg, ragContext, history, { imageBase64, imageMime } = {}) {
   const historyBlock = history ? `${history}\n\n` : '';
   const contextBlock = ragContext ? `Relevant knowledge base context:\n${ragContext}\n\n` : '';
 
@@ -574,7 +586,8 @@ async function chatWithProvider(text, alias, cfg, ragContext, history) {
     }
   }
 
-  const prompt = `${historyBlock}${contextBlock}${webBlock}User question: ${text}`;
+  const imageNote = imageBase64 ? '[An image is attached to this message]\n\n' : '';
+  const prompt = `${historyBlock}${contextBlock}${webBlock}${imageNote}User question: ${text}`;
   if (history) {
     console.log(`[whatsapp] History injected (${history.split('\n').length - 1} messages):\n${history}`);
   } else {
@@ -582,9 +595,10 @@ async function chatWithProvider(text, alias, cfg, ragContext, history) {
   }
   const apiKey = getApiKey(alias.provider, cfg);
   const systemWithTools = CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
+  const imageOpts = imageBase64 && imageMime ? { imageBase64, imageMime } : {};
 
   // First call — AI may respond directly or use a tool
-  let response = await callProvider(alias.provider, alias.model, prompt, systemWithTools, apiKey, cfg);
+  let response = await callProvider(alias.provider, alias.model, prompt, systemWithTools, apiKey, cfg, imageOpts);
   if (!response) return response;
 
   // Check for tool calls in the response
@@ -1010,9 +1024,50 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     return;
   }
 
-  // ── Image with caption: save as file resource ──
+  // ── Image with caption ──
   if (msg.message?.imageMessage && text.trim()) {
     const cfg = await getConfig('whatsapp') || {};
+    const aliases = getAliases(cfg);
+    const alias = resolveAlias(text, aliases);
+
+    if (alias) {
+      // Image + @alias → send image to AI for analysis
+      if (alias.provider === 'ollama') {
+        const ollamaUrl = await getConfig('ollama.url');
+        cfg.ollamaUrl = ollamaUrl || 'http://localhost:11434';
+      }
+      const cleanText = text.replace(new RegExp(`@${alias.tag}\\b`, 'i'), '').trim() || 'Describe this image.';
+      const providerLabel = PROVIDER_LABELS[alias.provider] || alias.tag.charAt(0).toUpperCase() + alias.tag.slice(1);
+
+      if (alias.provider === 'claude-cli') {
+        await sendReply(jid, msg, `*${providerLabel}:* Claude CLI doesn't support image analysis. Try a cloud provider like @gemini or @claude.`);
+        return;
+      }
+
+      if (PROVIDER_NEEDS_KEY.has(alias.provider)) {
+        const apiKey = getApiKey(alias.provider, cfg);
+        if (!apiKey) {
+          await sendReply(jid, msg, `*${providerLabel}:* Not configured. Add a ${providerLabel} API key in Idea Basin settings.`);
+          return;
+        }
+      }
+
+      try {
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+        const imageBase64 = buffer.toString('base64');
+        const ragContext = await getRagContext(cleanText);
+        const history = formatHistory(jid, msg.key?.id);
+        const reply = await chatWithProvider(cleanText, alias, cfg, ragContext, history, { imageBase64, imageMime: mime });
+        await sendReply(jid, msg, `*${providerLabel}:* ${reply}`, providerLabel);
+      } catch (err) {
+        console.error(`[whatsapp] Image + AI failed:`, err.message);
+        await sendReply(jid, msg, `*${providerLabel}:* Sorry, couldn't analyse the image. Try again.`);
+      }
+      return;
+    }
+
+    // No alias — save image as before
     try {
       const { description } = await saveImage(msg, text.trim(), cfg);
       await sendReply(jid, msg, `*System:* Saved to WhatsApp Captures.\n\n*AI description:* ${description}`);
@@ -1135,7 +1190,7 @@ async function handleMessage(msg, groupJid, mode = 'full') {
   }
 }
 
-// ── Chat-only handler (no capture, no save, no images, no placement) ──
+// ── Chat-only handler (no capture, no save, no placement — but supports images) ──
 
 async function handleChatOnly(msg, jid, text, sender) {
   const cfg = await getConfig('whatsapp') || {};
@@ -1149,7 +1204,7 @@ async function handleChatOnly(msg, jid, text, sender) {
     cfg.ollamaUrl = ollamaUrl || 'http://localhost:11434';
   }
 
-  const cleanText = text.replace(new RegExp(`@${alias.tag}\\b`, 'i'), '').trim();
+  const cleanText = text.replace(new RegExp(`@${alias.tag}\\b`, 'i'), '').trim() || (msg.message?.imageMessage ? 'Describe this image.' : '');
   const providerLabel = PROVIDER_LABELS[alias.provider] || alias.tag.charAt(0).toUpperCase() + alias.tag.slice(1);
 
   if (!cleanText) return;
@@ -1164,9 +1219,21 @@ async function handleChatOnly(msg, jid, text, sender) {
   }
 
   try {
+    // Extract image if present
+    let imageOpts = {};
+    if (msg.message?.imageMessage) {
+      if (alias.provider === 'claude-cli') {
+        await sendReply(jid, msg, `*${providerLabel}:* Claude CLI doesn't support image analysis. Try a cloud provider like @gemini or @claude.`);
+        return;
+      }
+      const buffer = await downloadMediaMessage(msg, 'buffer', {});
+      const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+      imageOpts = { imageBase64: buffer.toString('base64'), imageMime: mime };
+    }
+
     const ragContext = await getRagContext(cleanText);
     const history = formatHistory(jid, msg.key?.id);
-    const reply = await chatWithProvider(cleanText, alias, cfg, ragContext, history);
+    const reply = await chatWithProvider(cleanText, alias, cfg, ragContext, history, imageOpts);
     await sendReply(jid, msg, `*${providerLabel}:* ${reply}`, providerLabel);
   } catch (err) {
     console.error(`[whatsapp] Error in chat-only handler:`, err.message);
