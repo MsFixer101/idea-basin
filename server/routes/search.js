@@ -13,8 +13,11 @@ router.get('/', async (req, res) => {
     const embedding = await embed(q);
     if (!embedding) return res.status(500).json({ error: 'Failed to generate embedding' });
 
-    const results = await db.searchChunks(embedding, parseInt(limit) || 10, node || null);
-    res.json(results);
+    const maxResults = parseInt(limit) || 10;
+    const results = await db.searchChunks(embedding, maxResults + 10, node || null);
+    const privateIds = await db.getPrivateNodeIds();
+    const filtered = results.filter(r => !privateIds.has(r.node_id)).slice(0, maxResults);
+    res.json(filtered);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -13,6 +13,7 @@ import {
   getNode,
   getCrossRefs,
   createCrossRef,
+  getPrivateNodeIds,
 } from '../db/queries.js';
 import { readFileContent } from './scanner.js';
 import { performSearch } from './web-search.js';
@@ -101,15 +102,19 @@ export const toolExecutors = {
   async search_knowledge({ query, node_id, limit }) {
     const embedding = await embed(query);
     if (!embedding) return { error: 'Embedding failed — is the embedding provider configured?' };
-    const results = await searchChunks(embedding, limit || 5, node_id || null);
-    return results.map(r => ({
-      content: r.content?.substring(0, 600),
-      similarity: parseFloat(r.similarity).toFixed(3),
-      node: r.node_label,
-      resource_type: r.type,
-      url: r.url,
-      description: r.resource_description,
-    }));
+    const results = await searchChunks(embedding, (limit || 5) + 10, node_id || null);
+    const privateIds = await getPrivateNodeIds();
+    return results
+      .filter(r => !privateIds.has(r.node_id))
+      .slice(0, limit || 5)
+      .map(r => ({
+        content: r.content?.substring(0, 600),
+        similarity: parseFloat(r.similarity).toFixed(3),
+        node: r.node_label,
+        resource_type: r.type,
+        url: r.url,
+        description: r.resource_description,
+      }));
   },
 
   async list_nodes() {
@@ -117,7 +122,9 @@ export const toolExecutors = {
       SELECT n.id, n.label, n.description, n.color, n.parent_id,
         (SELECT count(*)::int FROM resources r WHERE r.node_id = n.id) as resource_count,
         (SELECT count(*)::int FROM nodes c WHERE c.parent_id = n.id) as child_count
-      FROM nodes n ORDER BY n.created_at
+      FROM nodes n
+      WHERE COALESCE(n.private, false) = false
+      ORDER BY n.created_at
     `);
     return rows;
   },
@@ -126,6 +133,7 @@ export const toolExecutors = {
     if (!node_id) return { error: 'node_id is required' };
     const node = await getNodeWithChildren(node_id);
     if (!node) return { error: 'Node not found' };
+    if (node.private) return { error: 'Node not found' };
     const resources = await getResourcesForNode(node_id);
     return {
       ...node,
