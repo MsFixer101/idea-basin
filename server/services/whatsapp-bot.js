@@ -181,6 +181,8 @@ async function callProvider(provider, model, prompt, system, apiKey, cfg, { imag
       } else {
         messages.push({ role: 'user', content: prompt });
       }
+      const startTime = Date.now();
+      console.log(`[whatsapp] Ollama request: model=${model || 'llama3.2'}, prompt length=${prompt.length}, system length=${system.length}`);
       const res = await fetch(`${ollamaUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -189,8 +191,19 @@ async function callProvider(provider, model, prompt, system, apiKey, cfg, { imag
           messages,
           stream: false,
         }),
+        signal: AbortSignal.timeout(120000),
       });
+      const elapsed = Date.now() - startTime;
+      if (elapsed > 10000) console.warn(`[whatsapp] Ollama took ${(elapsed / 1000).toFixed(1)}s to respond (model: ${model || 'llama3.2'})`);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error(`[whatsapp] Ollama HTTP ${res.status}: ${errText.substring(0, 200)}`);
+        return null;
+      }
       const data = await res.json();
+      if (!data.message?.content) {
+        console.warn(`[whatsapp] Ollama returned empty content:`, JSON.stringify(data).substring(0, 300));
+      }
       return data.message?.content || null;
     }
     case 'openai':
@@ -267,8 +280,8 @@ When you use knowledge base context or web search results in your answer, *alway
 const WHATSAPP_TOOLS = `
 You also have access to read-only tools to query the Idea Basin knowledge base directly. Use these when the user asks data questions you can't answer from the context already provided (counts, listings, specific node contents).
 
-To use a tool, output a tool_call block:
-<tool_call>{"name": "tool_name", "args": {"key": "value"}}</tool_call>
+To use a tool, output a use_tool block:
+<use_tool>{"name": "tool_name", "args": {"key": "value"}}</use_tool>
 
 Available tools:
 
@@ -287,12 +300,12 @@ Available tools:
 
 Rules:
 - Only use a tool when the provided context doesn't already answer the question.
-- Output ONE tool_call per response, then STOP and wait for the result.
+- Output ONE use_tool per response, then STOP and wait for the result.
 - After receiving tool results, answer the user's question directly — do NOT call another tool.
-- Never use tool_call tags for anything other than these 3 tools.
+- Never use use_tool tags for anything other than these 3 tools.
 `;
 
-const WA_TOOL_CALL_RE = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+const WA_TOOL_CALL_RE = /<use_tool>([\s\S]*?)<\/use_tool>/g;
 
 function parseWaToolCalls(text) {
   const calls = [];

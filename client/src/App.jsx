@@ -11,6 +11,7 @@ import SettingsPanel from './components/SettingsPanel.jsx';
 import ChatDrawer from './components/ChatDrawer.jsx';
 import ConfirmMoveModal from './components/ConfirmMoveModal.jsx';
 import SearchBar from './components/SearchBar.jsx';
+import ContextMenu from './components/ContextMenu.jsx';
 
 export default function App() {
   const [currentNodeId, setCurrentNodeId] = useState(null);
@@ -24,6 +25,8 @@ export default function App() {
   const [showScan, setShowScan] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMoveConfirm, setShowMoveConfirm] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, node }
+  const [addNodeParent, setAddNodeParent] = useState(null); // { id, label } for context menu add-child
   const [loading, setLoading] = useState(true);
   const containerRef = useRef(null);
   const pendingSelectRef = useRef(null);
@@ -419,6 +422,62 @@ export default function App() {
     }
   }, [showMoveConfirm, currentNodeId]);
 
+  // ── Context menu handlers ──
+  const handleGraphContextMenu = useCallback(({ x, y, node }) => {
+    setContextMenu({ x, y, node });
+  }, []);
+
+  const ctxOpen = useCallback((node) => {
+    handleSelect(node);
+    if (node.child_count > 0) handleExpand(node.id, false);
+  }, [handleSelect, handleExpand]);
+
+  const ctxAddChild = useCallback((node) => {
+    if (node) {
+      setAddNodeParent({ id: node.id, label: node.label });
+    } else {
+      setAddNodeParent({ id: currentNodeId, label: currentNode?.label || 'Root' });
+    }
+  }, [currentNodeId, currentNode]);
+
+  const ctxRename = useCallback((node) => {
+    // Select the node + the panel will show with inline rename available
+    handleSelect(node);
+  }, []);
+
+  const ctxTogglePrivate = useCallback(async (node) => {
+    try {
+      await api.updateNode(node.id, { private: !node.private });
+      const fresh = await api.getNodeDeep(currentNodeId);
+      setCurrentNode(fresh);
+      if (selectedChild?.id === node.id) {
+        setSelectedChild(prev => prev ? { ...prev, private: !node.private } : prev);
+      }
+    } catch (err) {
+      console.error('Failed to toggle private:', err);
+    }
+  }, [currentNodeId, selectedChild]);
+
+  const ctxDelete = useCallback(async (node) => {
+    if (confirm(`Delete "${node.label}" and all its contents?`)) {
+      handleDeleteNode(node.id);
+    }
+  }, [handleDeleteNode]);
+
+  const handleAddNodeWithParent = useCallback(async ({ label, color }) => {
+    if (!addNodeParent) return;
+    try {
+      await api.createNode({ parent_id: addNodeParent.id, label, color });
+      const node = await api.getNodeDeep(currentNodeId);
+      setCurrentNode(node);
+      // Auto-expand parent so new child is visible
+      setExpanded(prev => ({ ...prev, [addNodeParent.id]: true }));
+    } catch (err) {
+      console.error('Failed to create node:', err);
+    }
+    setAddNodeParent(null);
+  }, [addNodeParent, currentNodeId]);
+
   // Poll for ingesting resources
   useEffect(() => {
     const ingesting = selectedResources.filter(r => r.status === 'pending' || r.status === 'ingesting');
@@ -507,6 +566,7 @@ export default function App() {
             onExpand={handleExpand}
             onDrillDown={handleDrillDown}
             onReparent={handleReparent}
+            onContextMenu={handleGraphContextMenu}
             containerRef={containerRef}
           />
 
@@ -630,6 +690,28 @@ export default function App() {
           targetLabel={showMoveConfirm.targetLabel}
           onConfirm={confirmReparent}
           onCancel={() => setShowMoveConfirm(null)}
+        />
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          node={contextMenu.node}
+          onClose={() => setContextMenu(null)}
+          onOpen={ctxOpen}
+          onAddChild={ctxAddChild}
+          onRename={ctxRename}
+          onTogglePrivate={ctxTogglePrivate}
+          onDelete={ctxDelete}
+        />
+      )}
+
+      {addNodeParent && (
+        <AddNodeModal
+          parentLabel={addNodeParent.label}
+          onAdd={handleAddNodeWithParent}
+          onClose={() => setAddNodeParent(null)}
         />
       )}
     </div>

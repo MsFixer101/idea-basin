@@ -476,6 +476,7 @@ export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAdd
               {node.label}
             </span>
           )}
+          {node.private && <span title="Private node" style={{ fontSize: 12, flexShrink: 0 }}>🔒</span>}
           {/* Actions menu button */}
           <div ref={actionsMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
             <button
@@ -512,6 +513,16 @@ export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAdd
                   onMouseEnter={(e) => e.currentTarget.style.background = theme.bg.hover}
                   onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 >Upload image</div>
+                <div
+                  onClick={async () => {
+                    setShowActionsMenu(false);
+                    await api.updateNode(node.id, { private: !node.private });
+                    if (onRefresh) onRefresh();
+                  }}
+                  style={{ padding: '6px 10px', fontSize: 11, color: node.private ? '#fbbf24' : theme.text.secondary, cursor: 'pointer', borderRadius: 4 }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = theme.bg.hover}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                >{node.private ? '🔓 Make public' : '🔒 Make private'}</div>
                 {node.parent_id && node.parent_id !== ROOT_NODE_ID && (
                   <div
                     onClick={async () => {
@@ -982,18 +993,15 @@ export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAdd
               }}>Merge into...</button>
             )}
 
-            {/* Private toggle */}
-            <label style={{
-              display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-              padding: '8px 0', marginBottom: 4,
-            }}>
-              <input type="checkbox" checked={!!node.private} onChange={async (e) => {
-                await api.updateNode(node.id, { private: e.target.checked });
-                if (onRefresh) onRefresh();
-              }} />
-              <span style={{ fontSize: 11, color: theme.text.secondary }}>Private</span>
-              <span style={{ fontSize: 10, color: theme.text.ghost }}>— hidden from WhatsApp & briefing</span>
-            </label>
+            {/* Private indicator */}
+            {node.private && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 0', marginBottom: 4, fontSize: 11, color: '#fbbf24',
+              }}>
+                🔒 Private — hidden from AI chat, search, WhatsApp & briefing
+              </div>
+            )}
 
             {/* Delete */}
             {confirmDelete ? (

@@ -27,6 +27,7 @@ export default function Graph({
   onExpand,
   onDrillDown,
   onReparent,
+  onContextMenu,
   containerRef,
 }) {
   const svgRef = useRef(null);
@@ -369,6 +370,20 @@ export default function Graph({
         onDrillDown(d.id);
       }
     });
+
+    // Right-click — context menu
+    if (onContextMenu) {
+      allNodes.on('contextmenu', (e, d) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu({ x: e.clientX, y: e.clientY, node: d._raw });
+      });
+      svg.on('contextmenu', (e) => {
+        // Only fire for empty space — node right-clicks handled above with stopPropagation
+        e.preventDefault();
+        onContextMenu({ x: e.clientX, y: e.clientY, node: null });
+      });
+    }
 
     // ── Tick ──
     simulation.on('tick', () => {
