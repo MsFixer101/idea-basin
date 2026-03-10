@@ -14,8 +14,8 @@ export async function generate(prompt, system, apiKey, model, { imageBase64, ima
   let content;
   if (imageBase64 && imageMime) {
     content = [
-      { inlineData: { mimeType: imageMime, data: imageBase64 } },
       prompt,
+      { inlineData: { mimeType: imageMime, data: imageBase64 } },
     ];
   } else {
     content = prompt;

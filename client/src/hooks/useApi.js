@@ -58,6 +58,11 @@ export const api = {
   whatsappRefreshGroups: () => request('/whatsapp/refresh-groups', { method: 'POST' }),
   whatsappSelectGroup: (groupJid) => request('/whatsapp/select-group', { method: 'POST', body: JSON.stringify({ groupJid }) }),
   whatsappSelectChatGroup: (groupJid) => request('/whatsapp/select-chat-group', { method: 'POST', body: JSON.stringify({ groupJid }) }),
+  whatsappSelectBlogGroup: (groupJid) => request('/whatsapp/select-blog-group', { method: 'POST', body: JSON.stringify({ groupJid }) }),
+
+  // Memory
+  getMemories: () => request('/memory'),
+  deleteMemory: (id) => request(`/memory/${id}`, { method: 'DELETE' }),
 
   // Briefing
   briefingStatus: () => request('/briefing/status'),

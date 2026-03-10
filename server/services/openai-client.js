@@ -8,8 +8,8 @@ export async function generate(prompt, system, apiKey, model, baseUrl, { imageBa
   if (imageBase64 && imageMime) {
     const dataUrl = `data:${imageMime};base64,${imageBase64}`;
     userContent = [
-      { type: 'image_url', image_url: { url: dataUrl } },
       { type: 'text', text: prompt },
+      { type: 'image_url', image_url: { url: dataUrl } },
     ];
   } else {
     userContent = prompt;

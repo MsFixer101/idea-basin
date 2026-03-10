@@ -17,6 +17,7 @@ import configRouter from './routes/config.js';
 import chatRouter from './routes/chat.js';
 import whatsappRouter from './routes/whatsapp.js';
 import briefingRouter from './routes/briefing.js';
+import memoryRouter from './routes/memory.js';
 import pool from './db/pool.js';
 import { startBot } from './services/whatsapp-bot.js';
 import { startScheduler } from './services/morning-briefing.js';
@@ -57,6 +58,7 @@ app.use('/api/config', configRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/briefing', briefingRouter);
+app.use('/api/memory', memoryRouter);
 
 // Serve uploaded images
 app.use('/uploads', express.static(UPLOADS_DIR));

@@ -151,8 +151,9 @@ export default function SettingsPanel({ onClose }) {
   const [addRssName, setAddRssName] = useState('');
   const [addRssUrl, setAddRssUrl] = useState('');
   const [addBraveTopic, setAddBraveTopic] = useState('');
+  const [memories, setMemories] = useState([]);
   // Collapsible sections — features + providers open by default
-  const [collapsed, setCollapsed] = useState({ features: false, providers: false, local: true, brave: true, whatsapp: false, briefing: true, prompts: true });
+  const [collapsed, setCollapsed] = useState({ features: false, providers: false, local: true, brave: true, whatsapp: false, briefing: true, prompts: true, memory: true });
 
   useEffect(() => {
     (async () => {
@@ -207,6 +208,8 @@ export default function SettingsPanel({ onClose }) {
     }
     savedState.brave = false;
     setKeySaved(prev => ({ ...prev, ...savedState }));
+    // Load AI memories
+    api.getMemories().then(r => setMemories(r.entries || [])).catch(() => {});
   }, []);
 
   // Poll WhatsApp bot status (when connecting or showing QR)
@@ -1279,6 +1282,36 @@ export default function SettingsPanel({ onClose }) {
               Reset to Defaults
             </button>
           </div>
+        </div>}
+
+        {/* ─── AI Memory ─── */}
+        <div onClick={() => setCollapsed(p => ({ ...p, memory: !p.memory }))} style={{ ...sectionTitleStyle, marginTop: 12, cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, opacity: 0.5 }}>{collapsed.memory ? '▸' : '▾'}</span> {'\u{1F9E0}'} AI Memory
+          <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 'auto' }}>{memories.length}/50</span>
+        </div>
+
+        {!collapsed.memory && <div style={cardStyle}>
+          <div style={hintStyle}>Facts saved by AIs or via <b>@memory</b> in WhatsApp. These are injected into every AI conversation for continuity.</div>
+          {memories.length === 0 && <div style={{ fontSize: 12, opacity: 0.5, textAlign: 'center', padding: 16 }}>No memories yet. Use @memory in WhatsApp or let AIs save facts automatically.</div>}
+          {memories.map(m => (
+            <div key={m.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 0', borderBottom: `1px solid ${theme.border}` }}>
+              <span style={{ fontSize: 9, padding: '2px 5px', borderRadius: 3, background: m.source === 'ai' ? theme.accent.blue : theme.accent.green, color: '#fff', whiteSpace: 'nowrap', marginTop: 1 }}>
+                {m.source === 'ai' ? 'AI' : 'You'}
+              </span>
+              <div style={{ flex: 1, fontSize: 12, color: theme.text.primary }}>{m.text}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                <span style={{ fontSize: 9, opacity: 0.4 }}>{new Date(m.date).toLocaleDateString()}</span>
+                <button onClick={async () => {
+                  try {
+                    await api.deleteMemory(m.id);
+                    setMemories(prev => prev.filter(x => x.id !== m.id));
+                  } catch (err) {
+                    console.error('Delete memory failed:', err);
+                  }
+                }} style={{ ...btnSecondary, fontSize: 9, padding: '1px 6px' }}>Delete</button>
+              </div>
+            </div>
+          ))}
         </div>}
 
         {saving && (

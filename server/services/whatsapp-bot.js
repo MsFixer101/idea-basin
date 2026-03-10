@@ -26,6 +26,7 @@ const BASIN_RE = /^@basin\b/i;
 const SUBBASIN_RE = /^@subbasin\b/i;
 const LIST_BASINS_RE = /^\/(basins|subbasins)\b/i;
 const MORNING_RE = /^\/morning\b/i;
+const MEMORY_RE = /^@memory\b/i;
 const DESCRIBE_IMAGE_PROMPT = 'Describe this image concisely in 1-2 sentences. Focus on the key content — what is shown, any text visible, and the main subject.';
 
 let sock = null;
@@ -298,11 +299,17 @@ Available tools:
    Use for: "find resources about X", "search for Y", "anything about Z?"
    Args: { "q": "search terms" }
 
+4. save_memory — Save a useful fact to persistent memory for future conversations.
+   Use for: remembering user preferences, corrections, key facts, important context
+   Args: { "text": "fact to remember" }
+
 Rules:
 - Only use a tool when the provided context doesn't already answer the question.
 - Output ONE use_tool per response, then STOP and wait for the result.
 - After receiving tool results, answer the user's question directly — do NOT call another tool.
-- Never use use_tool tags for anything other than these 3 tools.
+- Never use use_tool tags for anything other than these 4 tools.
+- If you learn something worth remembering long-term (user preferences, corrections, key facts), proactively suggest saving it or use save_memory directly.
+- Users can also save memories with *@memory <text>* in the chat.
 `;
 
 const WA_TOOL_CALL_RE = /<use_tool>([\s\S]*?)<\/use_tool>/g;
@@ -326,7 +333,7 @@ function stripToolCalls(text) {
   return text.replace(WA_TOOL_CALL_RE, '').trim();
 }
 
-const WA_TOOL_ALLOWLIST = new Set(['query_nodes', 'query_node', 'search_knowledge']);
+const WA_TOOL_ALLOWLIST = new Set(['query_nodes', 'query_node', 'search_knowledge', 'save_memory']);
 const WA_TOOL_RESULT_MAX = 3000;
 
 async function executeWhatsAppTool({ name, args }) {
@@ -363,6 +370,12 @@ async function executeWhatsAppTool({ name, args }) {
         const res = await fetch(`http://localhost:3500/api/search?q=${encodeURIComponent(args.q)}`, fetchOpts);
         if (!res.ok) return { tool: name, error: `API returned ${res.status}` };
         data = await res.json();
+        break;
+      }
+      case 'save_memory': {
+        if (!args.text) return { tool: name, error: 'text is required' };
+        const { saveMemory } = await import('./whatsapp-memory.js');
+        data = await saveMemory(args.text, 'ai');
         break;
       }
     }
@@ -425,6 +438,8 @@ function formatToolResult(name, data) {
         return `[${r.node_label || 'unknown'}]${sim} ${content}`;
       }).join('\n');
     }
+    case 'save_memory':
+      return `Saved to memory: "${data.text}"`;
     default:
       return JSON.stringify(data).substring(0, WA_TOOL_RESULT_MAX);
   }
@@ -599,7 +614,7 @@ async function chatWithProvider(text, alias, cfg, ragContext, history, { imageBa
     }
   }
 
-  const imageNote = imageBase64 ? '[An image is attached to this message]\n\n' : '';
+  const imageNote = imageBase64 ? '[An image is attached. Address BOTH the image AND the text below.]\n\n' : '';
   const prompt = `${historyBlock}${contextBlock}${webBlock}${imageNote}User question: ${text}`;
   if (history) {
     console.log(`[whatsapp] History injected (${history.split('\n').length - 1} messages):\n${history}`);
@@ -608,7 +623,20 @@ async function chatWithProvider(text, alias, cfg, ragContext, history, { imageBa
   }
   const apiKey = getApiKey(alias.provider, cfg);
   const modelIdentity = `You are ${alias.tag} (${alias.provider}${alias.model ? ', model: ' + alias.model : ''}). Do not pretend to be a different AI.\n\n`;
-  const systemWithTools = modelIdentity + CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
+  let systemWithTools = modelIdentity + CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
+
+  // Inject persistent memories into system prompt
+  try {
+    const { getMemories } = await import('./whatsapp-memory.js');
+    const memories = await getMemories();
+    if (memories.length > 0) {
+      const memBlock = memories.map(m => `- ${m.text} (${m.date.split('T')[0]})`).join('\n');
+      systemWithTools += `\n\n## Your Memory\nThese are facts you've saved from previous conversations:\n${memBlock}`;
+    }
+  } catch (err) {
+    console.warn('[whatsapp] Failed to load memories:', err.message);
+  }
+
   const imageOpts = imageBase64 && imageMime ? { imageBase64, imageMime } : {};
 
   // First call — AI may respond directly or use a tool
@@ -912,6 +940,24 @@ async function handleMessage(msg, groupJid, mode = 'full') {
   // ── Chat-only mode: skip all capture/management commands ──
   if (mode === 'chat') {
     return handleChatOnly(msg, jid, text, sender);
+  }
+
+  // ── @memory: save to AI memory ──
+  if (MEMORY_RE.test(text)) {
+    const memText = text.replace(MEMORY_RE, '').trim();
+    if (!memText) {
+      await sendReply(jid, msg, '*System:* Usage: *@memory <text to remember>*\nExample: @memory I prefer concise answers with code examples');
+      return;
+    }
+    try {
+      const { saveMemory } = await import('./whatsapp-memory.js');
+      await saveMemory(memText, 'user');
+      await sendReply(jid, msg, `*System:* Saved to AI memory.`);
+    } catch (err) {
+      console.error('[whatsapp] Save memory failed:', err.message);
+      await sendReply(jid, msg, `*System:* Failed to save memory: ${err.message}`);
+    }
+    return;
   }
 
   // ── @save: free-text note capture ──
