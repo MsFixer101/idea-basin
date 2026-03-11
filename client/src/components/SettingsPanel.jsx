@@ -121,7 +121,7 @@ export default function SettingsPanel({ onClose }) {
   const [expandedModels, setExpandedModels] = useState({});
   const [addProviderType, setAddProviderType] = useState('');
   const [addProviderKey, setAddProviderKey] = useState('');
-  const [chatPrompts, setChatPrompts] = useState({ assistantPrompt: '', researchPrompt: '', guidelines: '' });
+  const [chatPrompts, setChatPrompts] = useState({ assistantPrompt: '', researchPrompt: '', guidelines: '', whatsappPrompt: '' });
   const [chatPromptsSaved, setChatPromptsSaved] = useState(false);
   const [waBotStatus, setWaBotStatus] = useState(null); // { status, qrDataUrl, groups }
   const [waGroupJid, setWaGroupJid] = useState('');
@@ -168,6 +168,7 @@ export default function SettingsPanel({ onClose }) {
             assistantPrompt: cfg.chat.assistantPrompt || '',
             researchPrompt: cfg.chat.researchPrompt || '',
             guidelines: cfg.chat.guidelines || '',
+            whatsappPrompt: cfg.chat.whatsappPrompt || '',
           });
         }
         if (cfg.whatsapp?.groupJid) setWaGroupJid(cfg.whatsapp.groupJid);
@@ -1262,6 +1263,20 @@ export default function SettingsPanel({ onClose }) {
             <div style={hintStyle}>One guideline per line. Each line becomes a bullet point in the system prompt.</div>
           </div>
 
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: theme.text.primary, marginBottom: 6 }}>
+              WhatsApp System Prompt
+            </div>
+            <textarea
+              value={chatPrompts.whatsappPrompt}
+              onChange={e => { setChatPrompts(p => ({ ...p, whatsappPrompt: e.target.value })); setChatPromptsSaved(false); }}
+              rows={5}
+              placeholder="Leave empty to use default WhatsApp prompt"
+              style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.4, boxSizing: 'border-box' }}
+            />
+            <div style={hintStyle}>Custom system prompt for WhatsApp AI chat. Leave blank for the built-in default. Tool instructions and memory are appended automatically.</div>
+          </div>
+
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={async () => {
               await saveConfig({ chat: chatPrompts });
@@ -1275,6 +1290,7 @@ export default function SettingsPanel({ onClose }) {
                 assistantPrompt: 'You are the Idea Basin assistant \u2014 a helpful AI embedded in a knowledge management app. You can search the knowledge base, browse nodes, create new nodes and resources, read local files, and open files.',
                 researchPrompt: 'You are a research assistant embedded in a knowledge management app. Your focus is finding, synthesizing, and organizing information. Use search tools proactively, cite sources, and create artifact documents for substantial findings. Be thorough and analytical.',
                 guidelines: 'Be concise and helpful. Use short paragraphs.\nWhen the user asks about something in their knowledge base, use the auto-retrieved context above first. If it\'s not sufficient, use search_knowledge for a more targeted query.\nWhen creating nodes or resources, confirm what you created and mention the ID.\nFor general conversation (greetings, opinions, coding help), respond directly without tools.\nIf you\'re unsure which node to use, call list_nodes first.',
+                whatsappPrompt: '',
               };
               setChatPrompts(defaults);
               setChatPromptsSaved(false);

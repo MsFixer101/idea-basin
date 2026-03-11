@@ -243,7 +243,7 @@ async function getRagContext(query) {
 // ── AI calls ─────────────────────────────────────────────────────────────
 
 const SUMMARIZE_SYSTEM = 'You are a helpful assistant. Summarize the following content concisely — 2-4 sentences covering the key points.';
-const CHAT_SYSTEM = `You are a helpful assistant responding in a WhatsApp group called "AI News". This group is connected to *Idea Basin*, a knowledge management app where ideas, links, and research are organized into hierarchical nodes (called "basins").
+const DEFAULT_CHAT_SYSTEM = `You are a helpful assistant responding in a WhatsApp group called "AI News". This group is connected to *Idea Basin*, a knowledge management app where ideas, links, and research are organized into hierarchical nodes (called "basins").
 
 How the WhatsApp bot works:
 - Users tag an AI by its configured alias (e.g. @claude, @qwen, @gemini, etc.)
@@ -623,7 +623,9 @@ async function chatWithProvider(text, alias, cfg, ragContext, history, { imageBa
   }
   const apiKey = getApiKey(alias.provider, cfg);
   const modelIdentity = `You are ${alias.tag} (${alias.provider}${alias.model ? ', model: ' + alias.model : ''}). Do not pretend to be a different AI.\n\n`;
-  let systemWithTools = modelIdentity + CHAT_SYSTEM + '\n\n' + WHATSAPP_TOOLS;
+  const chatCfg = await getConfig('chat') || {};
+  const chatSystem = chatCfg.whatsappPrompt || DEFAULT_CHAT_SYSTEM;
+  let systemWithTools = modelIdentity + chatSystem + '\n\n' + WHATSAPP_TOOLS;
 
   // Inject persistent memories into system prompt
   try {

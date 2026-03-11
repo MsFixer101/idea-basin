@@ -60,6 +60,7 @@ const DEFAULTS = {
     guidelines: 'Be concise and helpful. Use short paragraphs.\nWhen the user asks about something in their knowledge base, use the auto-retrieved context above first. If it\'s not sufficient, use search_knowledge for a more targeted query.\nWhen creating nodes or resources, confirm what you created and mention the ID.\nFor general conversation (greetings, opinions, coding help), respond directly without tools.\nIf you\'re unsure which node to use, call list_nodes first.',
     subAgentPrompt: 'You are a focused research agent. Find information on your assigned topic using the tools available. Report facts with source citations. Be thorough but concise \u2014 bullet points preferred.',
     synthesisPrompt: 'You are a research synthesizer. Combine findings from multiple research agents into a well-structured markdown document with: executive summary, main findings by theme, properly formatted citations, and a conclusion.',
+    whatsappPrompt: '',
   },
 };
 
