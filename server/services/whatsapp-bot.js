@@ -1319,7 +1319,7 @@ async function handleMessage(msg, groupJid, mode = 'full') {
           body: JSON.stringify({
             name: `snoozed reminder: ${reminderContent.substring(0, 50)}`,
             schedule: scheduleAt,
-            schedule_type: 'once',
+            scheduleType: 'once',
             type: 'http',
             method: 'POST',
             target: `${basinUrl}/api/whatsapp/send-message`,
