@@ -1323,7 +1323,7 @@ async function handleMessage(msg, groupJid, mode = 'full') {
             type: 'http',
             method: 'POST',
             target: `${basinUrl}/api/whatsapp/send-message`,
-            payload: JSON.stringify({ message: `🔔 Reminder: ${reminderContent}` }),
+            payload: { message: `🔔 Reminder: ${reminderContent}` },
             enabled: true
           })
         });
