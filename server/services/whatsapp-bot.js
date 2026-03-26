@@ -1323,7 +1323,7 @@ async function handleMessage(msg, groupJid, mode = 'full') {
             type: 'http',
             method: 'POST',
             target: `${basinUrl}/api/whatsapp/send-message`,
-            payload: { message: `🔔 Reminder: ${reminderContent}` },
+            payload: { message: `🔔 Reminder: ${reminderContent}`, group: 'reminders' },
             enabled: true
           })
         });
@@ -2133,13 +2133,13 @@ async function sendReply(jid, quotedMsg, text, botLabel) {
 
 export { callProvider, getApiKey };
 
-export async function sendToGroup(text) {
+export async function sendToGroup(text, targetGroupJid = null) {
   if (!sock || botState.status !== 'connected') {
     console.warn('[whatsapp] sendToGroup: not connected');
     return null;
   }
   const cfg = await getConfig('whatsapp') || {};
-  const groupJid = cfg.groupJid;
+  const groupJid = targetGroupJid || cfg.groupJid;
   if (!groupJid) {
     console.warn('[whatsapp] sendToGroup: no group configured');
     return null;

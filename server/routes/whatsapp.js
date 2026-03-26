@@ -144,14 +144,25 @@ router.post('/send-image', async (req, res) => {
 });
 
 // POST /api/whatsapp/send-message — send text message to WhatsApp group (used by Ticker reminders, Memoria, etc.)
+// group param: "reminders" (default), "main", "blog", "chat", or a raw JID
 router.post('/send-message', async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, group } = req.body;
     if (!message) {
       return res.status(400).json({ error: 'message is required' });
     }
 
-    const sent = await sendToGroup(message);
+    // Resolve group name to JID
+    const cfg = await getConfig('whatsapp') || {};
+    const groupMap = {
+      main: cfg.groupJid,
+      blog: cfg.blogGroupJid,
+      chat: cfg.chatGroupJid,
+      reminders: cfg.remindersGroupJid,
+    };
+    const targetJid = groupMap[group] || groupMap.reminders || cfg.groupJid || null;
+
+    const sent = await sendToGroup(message, targetJid);
     if (!sent) {
       return res.status(503).json({ error: 'WhatsApp bot not connected or no group configured' });
     }
