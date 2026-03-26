@@ -4,9 +4,26 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { get as getConfig } from './config.js';
 import { callProvider, getApiKey, sendToGroup } from './whatsapp-bot.js';
-import { callClaude } from './claude-cli.js';
 import { fetchRecentItems } from './rss-service.js';
 import { performNewsSearch } from './web-search.js';
+
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+async function callModelService(prompt, system) {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-cli-sonnet',
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
 import { getRecentActivity, getRecentCrossRefs, getActiveBasins, getKBStats, createResource } from '../db/queries.js';
 import { ingest } from '../workers/ingest.js';
 
@@ -305,7 +322,7 @@ export async function generateBriefing() {
 
     let response;
     if (provider === 'claude-cli') {
-      response = await callClaude(userPrompt, systemPrompt);
+      response = await callModelService(userPrompt, systemPrompt);
     } else {
       const apiKey = getApiKey(provider, waCfg);
       response = await callProvider(provider, model, userPrompt, systemPrompt, apiKey, waCfg);

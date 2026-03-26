@@ -5,11 +5,28 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { rm, readFile, writeFile, mkdir } from 'fs/promises';
 import { get as getConfig } from './config.js';
-import { callClaude } from './claude-cli.js';
 import * as geminiClient from './gemini-client.js';
 import * as openaiClient from './openai-client.js';
 import * as claudeClient from './claude-client.js';
-import { scrape } from './scraper.js';
+
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+async function callModelService(prompt, system) {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-cli-sonnet',
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+import { scrape, extractThumbnailUrl } from './scraper.js';
 import { embed } from './embedder.js';
 import { searchChunks, createResource, updateResource, createNode, getRootNode, getNodeDeep, getResourcesForNode, getPrivateNodeIds } from '../db/queries.js';
 import { ingest } from '../workers/ingest.js';
@@ -27,7 +44,31 @@ const SUBBASIN_RE = /^@subbasin\b/i;
 const LIST_BASINS_RE = /^\/(basins|subbasins)\b/i;
 const MORNING_RE = /^\/morning\b/i;
 const MEMORY_RE = /^@memory\b/i;
+const BLOG_RE = /^@blog\b/i;
+const PUBLISH_RE = /^@publish\b/i;
+const PUSH_RE = /^@push\b/i;
+const BLOG_NODE_ID = '00000000-0000-0000-0000-0000000000a0';
 const DESCRIBE_IMAGE_PROMPT = 'Describe this image concisely in 1-2 sentences. Focus on the key content — what is shown, any text visible, and the main subject.';
+
+function parseSnoozeTime(text) {
+  const t = text.toLowerCase().trim();
+  if (!t || t === 'later') return 60 * 60 * 1000; // default 1 hour
+  if (t === 'tomorrow') return 24 * 60 * 60 * 1000;
+
+  const match = t.match(/(\d+)\s*(min(?:ute)?s?|hrs?|hours?|days?)/i);
+  if (match) {
+    const n = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    if (unit.startsWith('min')) return n * 60 * 1000;
+    if (unit.startsWith('h')) return n * 60 * 60 * 1000;
+    if (unit.startsWith('d')) return n * 24 * 60 * 60 * 1000;
+  }
+
+  // "half an hour", "half hour"
+  if (/half\s*(an?\s*)?hour/i.test(t)) return 30 * 60 * 1000;
+
+  return null; // couldn't parse
+}
 
 let sock = null;
 let stopping = false;
@@ -160,7 +201,7 @@ async function callProvider(provider, model, prompt, system, apiKey, cfg, { imag
   switch (provider) {
     case 'claude-cli':
       // Claude CLI doesn't support vision
-      return callClaude(prompt, system);
+      return callModelService(prompt, system);
     case 'claude':
       return claudeClient.generate(prompt, system, apiKey, model || undefined, imageOpts);
     case 'gemini':
@@ -681,12 +722,14 @@ async function processUrl(url, alias, cfg) {
     summary = `Could not summarize — ${err.message}`;
   }
 
+  const thumbnail_url = extractThumbnailUrl(url);
   const resource = await createResource({
     node_id: WHATSAPP_CAPTURES_ID,
     url,
     type: 'link',
     description: summary || 'Shared via WhatsApp',
     status: 'pending',
+    thumbnail_url,
   });
 
   ingest(resource.id).catch(err => console.error(`[whatsapp] Ingest failed for ${resource.id}:`, err.message));
@@ -698,12 +741,14 @@ async function processUrlWithContext(url, userText, alias, cfg) {
   // User provided substantial text alongside the URL — use it as the description
   // instead of scraping (YouTube etc. often return garbage)
   const truncated = userText.substring(0, 2000);
+  const thumbnail_url = extractThumbnailUrl(url);
   const resource = await createResource({
     node_id: WHATSAPP_CAPTURES_ID,
     url,
     type: 'link',
     description: truncated,
     status: 'pending',
+    thumbnail_url,
   });
 
   ingest(resource.id).catch(err => console.error(`[whatsapp] Ingest failed for ${resource.id}:`, err.message));
@@ -806,6 +851,17 @@ const PLACEMENT_TTL = 5 * 60 * 1000;
 const pendingImageApprovals = new Map();
 const IMAGE_APPROVAL_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
+// Blog featured image confirmation: messageId → { nodeId, resourceUrl, timestamp }
+const pendingFeaturedImage = new Map();
+const FEATURED_TTL = 5 * 60 * 1000;
+
+// Blog push flow: messageId → { state, nodeId, title, content, ... }
+const pendingPushFlows = new Map();
+const PUSH_FLOW_TTL = 10 * 60 * 1000;
+
+// nodeId → resourceUrl (confirmed featured images for blog posts)
+const blogFeaturedImages = new Map();
+
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of pendingPlacements) {
@@ -813,6 +869,12 @@ setInterval(() => {
   }
   for (const [key, val] of pendingImageApprovals) {
     if (now - val.timestamp > IMAGE_APPROVAL_TTL) pendingImageApprovals.delete(key);
+  }
+  for (const [key, val] of pendingFeaturedImage) {
+    if (now - val.timestamp > FEATURED_TTL) pendingFeaturedImage.delete(key);
+  }
+  for (const [key, val] of pendingPushFlows) {
+    if (now - val.timestamp > PUSH_FLOW_TTL) pendingPushFlows.delete(key);
   }
 }, 60_000);
 
@@ -904,8 +966,12 @@ async function handleMessage(msg, groupJid, mode = 'full') {
   const text = msg.message?.conversation
     || msg.message?.extendedTextMessage?.text
     || msg.message?.imageMessage?.caption
+    || msg.message?.documentMessage?.caption
     || '';
-  if (!text.trim()) return;
+  // Allow document messages through even without caption (blog mode handles them)
+  const hasDocument = !!msg.message?.documentMessage;
+  const hasImage = !!msg.message?.imageMessage;
+  if (!text.trim() && !hasDocument && !hasImage) return;
 
   const sender = msg.key.participant || msg.key.remoteJid;
   if (isRateLimited(sender)) {
@@ -939,9 +1005,279 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     }
   }
 
+  // ── Featured image / push flow confirmations ──
+  // Support both quoted replies and plain yes/no (match most recent pending question)
+  const quotedId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
+  const shortAnswer = /^(yes|y|ok|no|n|nah)$/i.test(text.trim());
+
+  // Find matching pending: quoted reply first, else most recent pending if plain yes/no
+  let featuredMatch = quotedId && pendingFeaturedImage.has(quotedId) ? quotedId : null;
+  let pushMatch = quotedId && pendingPushFlows.has(quotedId) ? quotedId : null;
+
+  if (!featuredMatch && !pushMatch) {
+    // No quoted reply — try to match most recent pending question
+    const latestFeatured = [...pendingFeaturedImage.entries()].pop();
+    const latestPush = [...pendingPushFlows.entries()].pop();
+    // For metadata confirm, accept any text; for other states, require short answer
+    // Metadata confirm and schedule accept any text; other states require short answer
+    const freeTextState = latestPush && (
+      latestPush[1].state === 'AWAITING_METADATA_CONFIRM' ||
+      latestPush[1].state === 'AWAITING_SCHEDULE_ANSWER'
+    );
+    const pushAccepts = latestPush && (freeTextState || shortAnswer);
+    if (latestFeatured && pushAccepts) {
+      if (latestFeatured[1].timestamp > latestPush[1].timestamp && shortAnswer) featuredMatch = latestFeatured[0];
+      else pushMatch = latestPush[0];
+    } else if (latestFeatured && shortAnswer) {
+      featuredMatch = latestFeatured[0];
+    } else if (pushAccepts) {
+      pushMatch = latestPush[0];
+    }
+  }
+
+  if (featuredMatch && shortAnswer) {
+    const lower = text.trim().toLowerCase();
+    if (/^(yes|y|ok)$/i.test(lower)) {
+      const pending = pendingFeaturedImage.get(featuredMatch);
+      blogFeaturedImages.set(pending.nodeId, pending.resourceUrl);
+      await sendReply(jid, msg, '*System:* Featured image set. Use *@push* when ready to publish.');
+    } else {
+      await sendReply(jid, msg, '*System:* OK, image saved but not set as featured.');
+    }
+    pendingFeaturedImage.delete(featuredMatch);
+    return;
+  }
+
+  if (pushMatch) {
+    const flow = pendingPushFlows.get(pushMatch);
+
+    if (flow.state === 'AWAITING_METADATA_CONFIRM') {
+      // Accept "ok"/"yes" to confirm, or treat input as custom categories
+      const lower = text.trim().toLowerCase();
+      const isConfirm = /^(yes|y|ok)$/i.test(lower);
+      if (!isConfirm) {
+        // User typed custom categories — replace suggestions
+        flow.categories = text.split(',').map(c => c.trim()).filter(Boolean);
+      }
+      pendingPushFlows.delete(pushMatch);
+
+      // Next: ask about Dalla if no featured image
+      if (!flow.hasFeatured) {
+        const sent = await sendReply(jid, msg, `*Blog:* No featured image.\nGenerate one with Dalla? (yes/no)`);
+        if (sent?.key?.id) {
+          flow.state = 'AWAITING_IMAGE_ANSWER';
+          flow.timestamp = Date.now();
+          pendingPushFlows.set(sent.key.id, flow);
+        }
+        return;
+      }
+
+      // Has featured — push directly
+      await executeBlogPush(jid, msg, flow);
+      return;
+    }
+
+    if (!shortAnswer) return; // remaining states need yes/no
+    const lower = text.trim().toLowerCase();
+    const isYes = /^(yes|y|ok)$/i.test(lower);
+    pendingPushFlows.delete(pushMatch);
+
+    if (flow.state === 'AWAITING_IMAGE_ANSWER') {
+      if (isYes) {
+        try {
+          const { generateImagePrompt, generateImage } = await import('./blog-publisher.js');
+          await sendReply(jid, msg, '*Blog:* Generating image prompt...');
+          const prompt = await generateImagePrompt(flow.content);
+          await sendReply(jid, msg, `*Blog:* Creating image with Dalla...\n_${prompt}_`);
+          // Use any user-sent reference image for style transfer
+          const refBuffer = flow.referenceBuffer || null;
+          flow.featuredBuffer = await generateImage(prompt, refBuffer);
+        } catch (err) {
+          console.error('[whatsapp] Dalla image gen failed:', err.message);
+          await sendReply(jid, msg, `*Blog:* Image generation failed (${err.message}). Continuing without.`);
+        }
+      }
+      await executeBlogPush(jid, msg, flow);
+    } else if (flow.state === 'AWAITING_AUDIO_ANSWER') {
+      if (isYes) {
+        try {
+          await sendReply(jid, msg, '*Blog:* Generating audio narration with Kokoro...');
+          const { generateAudio } = await import('./blog-publisher.js');
+          const blogCfg = await getConfig('blog') || {};
+          await generateAudio(flow.content, flow.postId, blogCfg.blogUrl, blogCfg.audioToken);
+          await sendReply(jid, msg, `*Blog:* Audio narration uploaded.`);
+        } catch (err) {
+          console.error('[whatsapp] Audio generation failed:', err.message);
+          await sendReply(jid, msg, `*Blog:* Audio generation failed — ${err.message}`);
+        }
+      }
+      // Ask about scheduling
+      await askSchedule(jid, msg, flow);
+    } else if (flow.state === 'AWAITING_SCHEDULE_ANSWER') {
+      // Handled below — accepts more than just yes/no
+    }
+    return;
+  }
+
+  // Schedule answer can be "ok", "no/skip", or a custom date string
+  if (pushMatch && pendingPushFlows.has(pushMatch)) {
+    const flow = pendingPushFlows.get(pushMatch);
+    if (flow.state === 'AWAITING_SCHEDULE_ANSWER') {
+      pendingPushFlows.delete(pushMatch);
+      const lower = text.trim().toLowerCase();
+      const isSkip = /^(no|n|nah|skip)$/i.test(lower);
+
+      if (isSkip) {
+        await sendReply(jid, msg, '*Blog:* Left as draft. Review and publish manually.');
+      } else {
+        let scheduleDate = flow.suggestedDate;
+        const isConfirm = /^(yes|y|ok)$/i.test(lower);
+        if (!isConfirm) {
+          // Try to parse a custom date/time
+          scheduleDate = parseScheduleInput(text.trim(), flow.suggestedDate);
+          if (!scheduleDate) {
+            await sendReply(jid, msg, `*Blog:* Couldn't parse that date. Left as draft.`);
+            return;
+          }
+        }
+        try {
+          const { schedulePost } = await import('./blog-publisher.js');
+          await schedulePost(flow.postId, scheduleDate);
+          const dateStr = formatUKDate(scheduleDate);
+          await sendReply(jid, msg, `*Blog:* Scheduled for *${dateStr}*`);
+        } catch (err) {
+          console.error('[whatsapp] Schedule failed:', err.message);
+          await sendReply(jid, msg, `*Blog:* Scheduling failed — ${err.message}`);
+        }
+      }
+      return;
+    }
+  }
+
   // ── Chat-only mode: skip all capture/management commands ──
   if (mode === 'chat') {
     return handleChatOnly(msg, jid, text, sender);
+  }
+
+  // ── Blog mode: @blog, @publish, @push, documents, images, and AI chat ──
+  if (mode === 'blog') {
+    if (BLOG_RE.test(text) || PUBLISH_RE.test(text) || PUSH_RE.test(text)) {
+      // Fall through to the normal command handlers below
+    } else if (hasDocument) {
+      // .md document → create blog post from markdown content
+      const docMsg = msg.message.documentMessage;
+      const fileName = docMsg.fileName || docMsg.title || '';
+      if (!fileName.toLowerCase().endsWith('.md')) {
+        await sendReply(jid, msg, '*System:* Only .md files supported for blog posts.');
+        return;
+      }
+      const blogCfg = await getConfig('blog') || {};
+      if (!blogCfg.enabled) return;
+      try {
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        const mdContent = buffer.toString('utf-8');
+        // Extract title: caption overrides, else first # heading, else first line, else filename
+        let title = text.trim();
+        if (!title) {
+          const headingMatch = mdContent.match(/^#\s+(.+)$/m);
+          title = headingMatch ? headingMatch[1].trim() : mdContent.split('\n')[0].trim();
+        }
+        if (!title) title = fileName.replace(/\.md$/i, '');
+        // Strip the # heading from content if it matches the title
+        let content = mdContent;
+        const headingRe = new RegExp(`^#\\s+${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+        content = content.replace(headingRe, '').trim();
+
+        const node = await createNode({ parent_id: BLOG_NODE_ID, label: title, color: '#f97316' });
+        await createResource({
+          node_id: node.id,
+          type: 'note',
+          description: title,
+          content,
+          status: 'pending',
+        });
+        await sendReply(jid, msg, `*System:* Blog post created from *${fileName}*\n*Title:* ${title}\n*Length:* ${content.length} chars\nSend a photo to attach, or *@push* to publish.`);
+      } catch (err) {
+        console.error('[whatsapp] Blog .md import failed:', err.message);
+        await sendReply(jid, msg, '*System:* Failed to import markdown file. Try again.');
+      }
+      return;
+    } else if (hasImage) {
+      // Image in blog group → save to most recent blog sub-node + ask about featured
+      const blogCfg = await getConfig('blog') || {};
+      if (!blogCfg.enabled) return;
+      try {
+        const { rows: blogPosts } = await pool.query(
+          'SELECT id, label FROM nodes WHERE parent_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [BLOG_NODE_ID]
+        );
+        if (!blogPosts || blogPosts.length === 0) {
+          await sendReply(jid, msg, '*System:* No blog post yet. Create one first with *@blog <title>* or send a .md file.');
+          return;
+        }
+        const postNode = blogPosts[0];
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+        const ext = mime === 'image/png' ? 'png' : 'jpeg';
+        const subdir = postNode.id;
+        await mkdir(join(UPLOADS_DIR, subdir), { recursive: true });
+        const filename = `blog-${Date.now()}.${ext}`;
+        const filePath = join(UPLOADS_DIR, subdir, filename);
+        await writeFile(filePath, buffer);
+        const url = `/uploads/${subdir}/${filename}`;
+        const caption = text.trim() || 'Blog image';
+        await createResource({
+          node_id: postNode.id,
+          type: 'file',
+          url,
+          description: caption,
+          content: caption,
+          status: 'pending',
+        });
+        // Ask about featured image
+        const sent = await sendReply(jid, msg, `*System:* Image saved to *${postNode.label}*.\nSet as featured image? (yes/no)`);
+        if (sent?.key?.id) {
+          pendingFeaturedImage.set(sent.key.id, {
+            nodeId: postNode.id,
+            resourceUrl: url,
+            timestamp: Date.now(),
+          });
+        }
+      } catch (err) {
+        console.error('[whatsapp] Blog image save failed:', err.message);
+        await sendReply(jid, msg, '*System:* Failed to save image. Try again in a moment.');
+      }
+      return;
+    } else if (/^#\s+/.test(text.trim()) && text.trim().length > 200) {
+      // Pasted markdown starting with # heading (200+ chars) → treat as blog post
+      const blogCfg = await getConfig('blog') || {};
+      if (!blogCfg.enabled) return;
+      try {
+        const mdContent = text.trim();
+        const headingMatch = mdContent.match(/^#\s+(.+)$/m);
+        const title = headingMatch ? headingMatch[1].trim() : mdContent.split('\n')[0].trim();
+        let content = mdContent;
+        const headingRe = new RegExp(`^#\\s+${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+        content = content.replace(headingRe, '').trim();
+
+        const node = await createNode({ parent_id: BLOG_NODE_ID, label: title, color: '#f97316' });
+        await createResource({
+          node_id: node.id,
+          type: 'note',
+          description: title,
+          content,
+          status: 'pending',
+        });
+        await sendReply(jid, msg, `*System:* Blog post created.\n*Title:* ${title}\n*Length:* ${content.length} chars\nSend a photo to attach, or *@push* to publish.`);
+      } catch (err) {
+        console.error('[whatsapp] Blog auto-detect failed:', err.message);
+        await sendReply(jid, msg, '*System:* Failed to save blog post. Try again.');
+      }
+      return;
+    } else {
+      // Treat everything else as AI chat (same as chat-only mode)
+      return handleChatOnly(msg, jid, text, sender);
+    }
   }
 
   // ── @memory: save to AI memory ──
@@ -962,6 +1298,49 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     return;
   }
 
+  // ── Snooze / remind me later: reschedule a reminder via Ticker ──
+  const snoozeMatch = text.match(/^(?:snooze|remind me (?:again )?(?:in |later)?)(.*)$/i);
+  if (snoozeMatch) {
+    const timeText = snoozeMatch[1].trim() || '1 hour';
+    // Parse duration like "1 hour", "30 minutes", "2 hours", "tomorrow"
+    const durationMs = parseSnoozeTime(timeText);
+    if (durationMs) {
+      const scheduleAt = new Date(Date.now() + durationMs).toISOString();
+      // Extract the original reminder content from the quoted message if possible
+      const quotedText = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || '';
+      const reminderContent = quotedText.replace(/^🔔 Reminder:\s*/i, '') || timeText;
+
+      try {
+        const tickerUrl = 'http://localhost:3470';
+        const basinUrl = 'http://localhost:3500';
+        const resp = await fetch(`${tickerUrl}/api/tk/jobs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: `snoozed reminder: ${reminderContent.substring(0, 50)}`,
+            schedule: scheduleAt,
+            schedule_type: 'once',
+            type: 'http',
+            method: 'POST',
+            target: `${basinUrl}/api/whatsapp/send-message`,
+            payload: JSON.stringify({ message: `🔔 Reminder: ${reminderContent}` }),
+            enabled: true
+          })
+        });
+        if (resp.ok) {
+          const when = new Date(scheduleAt);
+          await sendReply(jid, msg, `*System:* Snoozed — I'll remind you at ${when.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`);
+        } else {
+          await sendReply(jid, msg, '*System:* Failed to schedule snooze — Ticker error.');
+        }
+      } catch (err) {
+        console.error('[whatsapp] Snooze failed:', err.message);
+        await sendReply(jid, msg, '*System:* Failed to schedule snooze — Ticker unavailable.');
+      }
+      return;
+    }
+  }
+
   // ── @save: free-text note capture ──
   if (SAVE_RE.test(text)) {
     const noteText = text.replace(SAVE_RE, '').trim();
@@ -975,6 +1354,204 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     } catch (err) {
       console.error('[whatsapp] Save text note failed:', err.message);
       await sendReply(jid, msg, '*System:* Failed to save note. Try again in a moment.');
+    }
+    return;
+  }
+
+  // ── @blog: create sub-node under Blog and save content ──
+  if (BLOG_RE.test(text)) {
+    const blogCfg = await getConfig('blog') || {};
+    if (!blogCfg.enabled) {
+      await sendReply(jid, msg, '*System:* Blog feature not enabled. Turn it on in Settings.');
+      return;
+    }
+    const body = text.replace(BLOG_RE, '').trim();
+    if (!body) {
+      await sendReply(jid, msg, '*System:* Usage: *@blog <title>*\nFirst line = title, rest = content.\nExample: @blog My Post Title\n\nThis is the blog content...');
+      return;
+    }
+    // First line is the title, rest is content
+    const newline = body.indexOf('\n');
+    const title = newline > -1 ? body.substring(0, newline).trim() : body;
+    const content = newline > -1 ? body.substring(newline + 1).trim() : '';
+    if (!content) {
+      await sendReply(jid, msg, '*System:* Need content after the title. Write the title on the first line, then the post body below it.');
+      return;
+    }
+    try {
+      const node = await createNode({ parent_id: BLOG_NODE_ID, label: title, color: '#f97316' });
+      await createResource({
+        node_id: node.id,
+        type: 'note',
+        description: title,
+        content,
+        status: 'pending',
+      });
+      await sendReply(jid, msg, `*System:* Blog post created.\n*Title:* ${title}\n*Length:* ${content.length} chars\nSend images to attach them to this post.`);
+    } catch (err) {
+      console.error('[whatsapp] @blog save failed:', err.message);
+      await sendReply(jid, msg, '*System:* Failed to save blog post. Try again in a moment.');
+    }
+    return;
+  }
+
+  // ── @publish: publish most recent blog post (sub-node + images) ──
+  if (PUBLISH_RE.test(text)) {
+    const blogCfg = await getConfig('blog') || {};
+    if (!blogCfg.enabled) {
+      await sendReply(jid, msg, '*System:* Blog feature not enabled. Turn it on in Settings.');
+      return;
+    }
+    try {
+      // Find the most recent child node of Blog (each @blog creates a sub-node)
+      const { rows: blogPosts } = await pool.query(
+        'SELECT id, label FROM nodes WHERE parent_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [BLOG_NODE_ID]
+      );
+      if (!blogPosts || blogPosts.length === 0) {
+        await sendReply(jid, msg, '*System:* No blog posts found. Save one first with *@blog <title>*');
+        return;
+      }
+      const postNode = blogPosts[0];
+      const resources = await getResourcesForNode(postNode.id);
+      const noteResource = resources.find(r => r.type === 'note');
+      if (!noteResource?.content) {
+        await sendReply(jid, msg, '*System:* Latest blog post has no content.');
+        return;
+      }
+      const title = postNode.label || noteResource.description || 'Untitled';
+      const content = noteResource.content;
+
+      // Gather attached images
+      const imageResources = resources.filter(r => r.type === 'file' && r.url);
+      const imageBuffers = [];
+      for (const img of imageResources) {
+        try {
+          const filePath = join(__dirname, '..', img.url);
+          const buf = await readFile(filePath);
+          const ext = img.url.split('.').pop() || 'jpeg';
+          imageBuffers.push({ buffer: buf, filename: `blog-image-${imageBuffers.length}.${ext}` });
+        } catch (err) {
+          console.error(`[whatsapp] Failed to read blog image ${img.url}:`, err.message);
+        }
+      }
+
+      const { runPipeline } = await import('./blog-publisher.js');
+      const result = await runPipeline(title, content, imageBuffers, async (progress) => {
+        await sendReply(jid, msg, `*Blog:* ${progress}`);
+      });
+
+      const adminUrl = result.blogResult?.admin_url || '';
+      const blogUrl = (blogCfg.blogUrl || '').replace(/\/+$/, '');
+      const imgCount = imageBuffers.length;
+      await sendReply(jid, msg, `*Blog:* Draft created: *${title}*${imgCount ? ` (${imgCount} image${imgCount > 1 ? 's' : ''})` : ''}\nReview at ${blogUrl}${adminUrl}`);
+    } catch (err) {
+      console.error('[whatsapp] @publish failed:', err.message);
+      await sendReply(jid, msg, `*Blog:* Publish failed — ${err.message}`);
+    }
+    return;
+  }
+
+  // ── @push: push most recent blog post to site (with optional image gen + TTS) ──
+  if (PUSH_RE.test(text)) {
+    const blogCfg = await getConfig('blog') || {};
+    if (!blogCfg.enabled) {
+      await sendReply(jid, msg, '*System:* Blog feature not enabled. Turn it on in Settings.');
+      return;
+    }
+    try {
+      const { rows: blogPosts } = await pool.query(
+        'SELECT id, label FROM nodes WHERE parent_id = $1 ORDER BY created_at DESC LIMIT 1',
+        [BLOG_NODE_ID]
+      );
+      if (!blogPosts?.length) {
+        await sendReply(jid, msg, '*System:* No blog posts found. Send a .md file or use *@blog <title>* first.');
+        return;
+      }
+      const postNode = blogPosts[0];
+      const resources = await getResourcesForNode(postNode.id);
+      const noteResource = resources.find(r => r.type === 'note');
+      if (!noteResource?.content) {
+        await sendReply(jid, msg, '*System:* Latest blog post has no content.');
+        return;
+      }
+      const title = postNode.label || noteResource.description || 'Untitled';
+      const content = noteResource.content;
+
+      // Check for featured image (confirmed via yes/no earlier)
+      const featuredUrl = blogFeaturedImages.get(postNode.id);
+      let featuredBuffer = null;
+      if (featuredUrl) {
+        try {
+          featuredBuffer = await readFile(join(__dirname, '..', featuredUrl));
+        } catch (err) {
+          console.error('[whatsapp] Failed to read featured image:', err.message);
+        }
+      }
+
+      // Gather extra images (non-featured)
+      const imageResources = resources.filter(r => r.type === 'file' && r.url);
+      const extraImages = [];
+      for (const img of imageResources) {
+        if (img.url === featuredUrl) continue;
+        try {
+          const buf = await readFile(join(__dirname, '..', img.url));
+          extraImages.push({ buffer: buf, filename: `blog-image.${img.url.split('.').pop() || 'jpeg'}` });
+        } catch {}
+      }
+
+      // If no explicit featured was set but there are images, use first image as featured
+      if (!featuredBuffer && imageResources.length > 0) {
+        try {
+          featuredBuffer = await readFile(join(__dirname, '..', imageResources[0].url));
+        } catch {}
+      }
+
+      // Step 1: Generate metadata (categories + excerpt)
+      await sendReply(jid, msg, '*Blog:* Generating categories and excerpt...');
+      const { generateMetadata } = await import('./blog-publisher.js');
+      let metadata;
+      try {
+        metadata = await generateMetadata(title, content);
+      } catch (err) {
+        console.error('[whatsapp] Metadata generation failed:', err.message);
+        metadata = { categories: [], excerpt: '' };
+        await sendReply(jid, msg, `*Blog:* Metadata generation failed (${err.message}). Continuing with defaults.`);
+      }
+
+      const catList = metadata.categories.length ? metadata.categories.join(', ') : '_none_';
+      const excerptPreview = metadata.excerpt || '_auto-generated from content_';
+      const hasFeatured = !!featuredBuffer;
+
+      const sent = await sendReply(jid, msg,
+        `*Blog:* Suggested metadata for *${title}*:\n\n` +
+        `*Categories:* ${catList}\n` +
+        `*Excerpt:* ${excerptPreview}\n\n` +
+        `Reply *ok* to confirm, or type your own categories (comma-separated).`
+      );
+      if (sent?.key?.id) {
+        // Use first extra image as Dalla style reference if no featured
+        const referenceBuffer = !featuredBuffer && extraImages.length > 0
+          ? extraImages[0].buffer
+          : null;
+        pendingPushFlows.set(sent.key.id, {
+          state: 'AWAITING_METADATA_CONFIRM',
+          nodeId: postNode.id,
+          title,
+          content,
+          extraImages,
+          featuredBuffer,
+          hasFeatured,
+          referenceBuffer,
+          postNode,
+          categories: metadata.categories,
+          excerpt: metadata.excerpt,
+          timestamp: Date.now(),
+        });
+      }
+    } catch (err) {
+      console.error('[whatsapp] @push failed:', err.message);
+      await sendReply(jid, msg, `*Blog:* Push failed — ${err.message}`);
     }
     return;
   }
@@ -1143,7 +1720,6 @@ async function handleMessage(msg, groupJid, mode = 'full') {
   const cfg = await getConfig('whatsapp') || {};
 
   // Check if this is a placement reply (quoted message response)
-  const quotedId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
   if (quotedId && pendingPlacements.has(quotedId)) {
     const result = await handlePlacementReply(msg, text, quotedId);
     if (result === true || result === 'feedback') return;
@@ -1250,6 +1826,168 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     console.error(`[whatsapp] Error handling message:`, err.message);
     await sendReply(jid, msg, `*${providerLabel}:* Sorry, something went wrong. Try again in a moment.`);
   }
+}
+
+// ── Blog push helper: publishes draft + asks about audio ──
+
+async function executeBlogPush(jid, msg, flow) {
+  const { title, content, featuredBuffer, extraImages, postNode, categories, excerpt } = flow;
+  const { publishDraft, generateEmbedding } = await import('./blog-publisher.js');
+  const blogCfg = await getConfig('blog') || {};
+
+  const catStr = (categories || []).join(', ');
+  await sendReply(jid, msg, `*Blog:* Pushing draft to blog...${catStr ? `\n_Categories: ${catStr}_` : ''}`);
+  const blogResult = await publishDraft({
+    title,
+    content,
+    excerpt: excerpt || undefined,
+    categories: catStr || undefined,
+    imageBuffer: featuredBuffer,
+    extraImages,
+  });
+
+  const blogUrl = (blogCfg.blogUrl || '').replace(/\/+$/, '');
+  const adminUrl = blogResult?.admin_url || '';
+  const postId = blogResult?.post_id;
+
+  await sendReply(jid, msg, `*Blog:* Draft created: *${title}*\nReview at ${blogUrl}${adminUrl}`);
+
+  // Generate semantic embedding (non-blocking, don't fail the flow)
+  if (postId) {
+    try {
+      await generateEmbedding(postId);
+      console.log(`[whatsapp] Embedding generated for post ${postId}`);
+    } catch (err) {
+      console.error('[whatsapp] Embedding generation failed:', err.message);
+    }
+  }
+
+  // Clean up featured image tracking
+  if (postNode?.id) blogFeaturedImages.delete(postNode.id);
+
+  // Ask about audio narration (chains into scheduling)
+  if (blogCfg.audioToken && postId) {
+    const sent = await sendReply(jid, msg, '*Blog:* Generate audio narration? (yes/no)');
+    if (sent?.key?.id) {
+      pendingPushFlows.set(sent.key.id, {
+        state: 'AWAITING_AUDIO_ANSWER',
+        postId,
+        content,
+        title,
+        timestamp: Date.now(),
+      });
+    }
+  } else if (postId) {
+    // No audio token — skip to scheduling
+    await askSchedule(jid, msg, { postId, title });
+  }
+}
+
+// ── Schedule helper: asks about publish date ──
+
+async function askSchedule(jid, msg, flow) {
+  const { suggestNextPublishDate } = await import('./blog-publisher.js');
+  try {
+    const { suggested, lastScheduled, scheduledPosts } = await suggestNextPublishDate();
+
+    let scheduleMsg = '*Blog:* Schedule publication?\n\n';
+    if (scheduledPosts.length > 0) {
+      const lastTitle = scheduledPosts[scheduledPosts.length - 1].title;
+      const lastDate = formatUKDate(new Date(scheduledPosts[scheduledPosts.length - 1].publish_date));
+      scheduleMsg += `Last scheduled: _${lastTitle}_ — ${lastDate}\n`;
+    }
+    scheduleMsg += `*Suggested:* ${formatUKDate(suggested)}\n\n`;
+    scheduleMsg += `Reply *ok* to confirm, *no* to leave as draft, or type a date (e.g. "Thursday 2pm", "25 Mar 10am").`;
+
+    const sent = await sendReply(jid, msg, scheduleMsg);
+    if (sent?.key?.id) {
+      pendingPushFlows.set(sent.key.id, {
+        state: 'AWAITING_SCHEDULE_ANSWER',
+        postId: flow.postId,
+        title: flow.title,
+        suggestedDate: suggested,
+        timestamp: Date.now(),
+      });
+    }
+  } catch (err) {
+    console.error('[whatsapp] Schedule suggestion failed:', err.message);
+    await sendReply(jid, msg, '*Blog:* Done. Draft is ready for review.');
+  }
+}
+
+function formatUKDate(date) {
+  return date.toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/London',
+  });
+}
+
+function parseScheduleInput(input, fallback) {
+  // Try common formats: "Thursday 2pm", "25 Mar 10am", "2026-03-25 10:00", "next tuesday"
+  const now = new Date();
+  const lower = input.toLowerCase().trim();
+
+  // Day name + optional time: "tuesday 10am", "thursday 2pm", "next wednesday"
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const dayMatch = lower.match(/(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?/i);
+  if (dayMatch) {
+    const targetDay = dayNames.indexOf(dayMatch[1].toLowerCase());
+    let hour = dayMatch[2] ? parseInt(dayMatch[2]) : 10;
+    const minute = dayMatch[3] ? parseInt(dayMatch[3]) : 0;
+    const ampm = dayMatch[4]?.toLowerCase();
+    if (ampm === 'pm' && hour < 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    while (d.getDay() !== targetDay) d.setDate(d.getDate() + 1);
+    // Set UK time
+    const ukOffset = getUKOffsetForDate(d);
+    d.setUTCHours(hour - ukOffset, minute, 0, 0);
+    return d;
+  }
+
+  // "25 Mar 10am" or "25 March 10:00"
+  const dateMatch = lower.match(/(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (dateMatch) {
+    const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const day = parseInt(dateMatch[1]);
+    const month = months.indexOf(dateMatch[2].toLowerCase().substring(0, 3));
+    let hour = parseInt(dateMatch[3]);
+    const minute = dateMatch[4] ? parseInt(dateMatch[4]) : 0;
+    const ampm = dateMatch[5]?.toLowerCase();
+    if (ampm === 'pm' && hour < 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+
+    const year = now.getFullYear();
+    const d = new Date(Date.UTC(year, month, day));
+    if (d < now) d.setUTCFullYear(year + 1);
+    const ukOffset = getUKOffsetForDate(d);
+    d.setUTCHours(hour - ukOffset, minute, 0, 0);
+    return d;
+  }
+
+  // ISO format: "2026-03-25T10:00:00"
+  try {
+    const d = new Date(input);
+    if (!isNaN(d.getTime())) return d;
+  } catch {}
+
+  return null;
+}
+
+function getUKOffsetForDate(date) {
+  const year = date.getUTCFullYear();
+  const marchLast = new Date(Date.UTC(year, 2, 31));
+  while (marchLast.getUTCDay() !== 0) marchLast.setUTCDate(marchLast.getUTCDate() - 1);
+  const octLast = new Date(Date.UTC(year, 9, 31));
+  while (octLast.getUTCDay() !== 0) octLast.setUTCDate(octLast.getUTCDate() - 1);
+  return (date >= marchLast && date < octLast) ? 1 : 0;
 }
 
 // ── Chat-only handler (no capture, no save, no placement — but supports images) ──

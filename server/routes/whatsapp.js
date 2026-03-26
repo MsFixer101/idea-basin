@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getStatus, startBot, stopBot, disconnectBot, refreshGroups, sendImageToGroup, addPendingImageApproval } from '../services/whatsapp-bot.js';
+import { getStatus, startBot, stopBot, disconnectBot, refreshGroups, sendToGroup, sendImageToGroup, addPendingImageApproval } from '../services/whatsapp-bot.js';
 import { get as getConfig, save as saveConfig } from '../services/config.js';
 
 const router = Router();
@@ -139,6 +139,26 @@ router.post('/send-image', async (req, res) => {
     res.json({ success: true, messageId: sent.key.id });
   } catch (err) {
     console.error('[whatsapp] send-image failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whatsapp/send-message — send text message to WhatsApp group (used by Ticker reminders, Memoria, etc.)
+router.post('/send-message', async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: 'message is required' });
+    }
+
+    const sent = await sendToGroup(message);
+    if (!sent) {
+      return res.status(503).json({ error: 'WhatsApp bot not connected or no group configured' });
+    }
+
+    res.json({ success: true, messageId: sent.key.id });
+  } catch (err) {
+    console.error('[whatsapp] send-message failed:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

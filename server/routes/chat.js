@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { readFile, stat } from 'fs/promises';
 import { basename } from 'path';
 import pool from '../db/pool.js';
-import { callClaude } from '../services/claude-cli.js';
 import { embed } from '../services/embedder.js';
 import { searchChunks } from '../db/queries.js';
 import {
@@ -13,6 +12,24 @@ import {
   ARTIFACTS_NODE_ID,
 } from '../services/chat-tools.js';
 import { get as getConfig } from '../services/config.js';
+
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+async function callModelService(prompt, system) {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-cli-sonnet',
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
 
 const router = Router();
 
@@ -163,7 +180,7 @@ router.post('/', async (req, res) => {
       const prompt = formatConversation(conversation);
       let response;
       try {
-        response = await callClaude(prompt, systemPrompt);
+        response = await callModelService(prompt, systemPrompt);
       } catch (err) {
         sendSSE(res, 'error', { message: err.message });
         break;

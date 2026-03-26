@@ -3,7 +3,24 @@ import * as claudeClient from './claude-client.js';
 import * as openaiClient from './openai-client.js';
 import * as geminiClient from './gemini-client.js';
 import * as embeddedModel from './embedded-model.js';
-import { callClaude } from './claude-cli.js';
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+
+async function callModelService(prompt, system, model = 'claude-cli-sonnet') {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
 
 // --- Provider Registry ---
 // All OpenAI-compatible providers share openai-client.js with different base URLs.
@@ -101,7 +118,7 @@ function makeGenerator(provider, model, apiKey) {
     case 'claude':
       return (prompt, system) => claudeClient.generate(prompt, system, apiKey, model || undefined);
     case 'claude-cli':
-      return (prompt, system) => callClaude(prompt, system);
+      return (prompt, system) => callModelService(prompt, system, model || 'claude-cli-sonnet');
     case 'ollama':
       return (prompt, system) => ollamaGenerate(prompt, system, model || undefined);
     case 'gemini':

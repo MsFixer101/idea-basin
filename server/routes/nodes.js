@@ -1,6 +1,23 @@
 import { Router } from 'express';
 import * as db from '../db/queries.js';
-import { callClaude } from '../services/claude-cli.js';
+
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+async function callModelService(prompt, system) {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-cli-sonnet',
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
 
 const router = Router();
 
@@ -133,7 +150,7 @@ If no meaningful groups exist, return { "groups": [], "cross_refs": [] }`;
 
     const prompt = `Here are the resources in this basin:\n\n${JSON.stringify(summaries, null, 2)}\n\nIdentify topical clusters.`;
 
-    const raw = await callClaude(prompt, systemPrompt);
+    const raw = await callModelService(prompt, systemPrompt);
 
     // Parse JSON from response (strip any markdown fences)
     const jsonStr = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();

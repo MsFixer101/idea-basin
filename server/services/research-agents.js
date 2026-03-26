@@ -1,6 +1,23 @@
-import { callClaude } from './claude-cli.js';
 import { toolExecutors, parseToolCalls, extractText, ARTIFACTS_NODE_ID } from './chat-tools.js';
 import { get as getConfig } from './config.js';
+
+const MODEL_SERVICE_URL = process.env.MODEL_SERVICE_URL || 'http://localhost:4000';
+async function callModelService(prompt, system) {
+  const resp = await fetch(`${MODEL_SERVICE_URL}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-cli-sonnet',
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: prompt },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error(`Model service error: ${resp.status}`);
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
+}
 
 // Tools that sub-agents are NEVER allowed to call
 const BLOCKED_TOOLS = new Set([
@@ -79,7 +96,7 @@ When you've gathered enough information, provide a final summary of your finding
     const prompt = conversation.join('\n\n');
     let response;
     try {
-      response = await callClaude(prompt, systemPrompt, 60_000);
+      response = await callModelService(prompt, systemPrompt);
     } catch (err) {
       findings += `\n[Agent error: ${err.message}]`;
       break;
@@ -189,7 +206,7 @@ Use markdown headers, bullet points, and bold for emphasis. Include direct links
 
   let synthesis;
   try {
-    synthesis = await callClaude(synthesisInput, synthesisPrompt, 120_000);
+    synthesis = await callModelService(synthesisInput, synthesisPrompt);
   } catch (err) {
     synthesis = `# Research: ${question}\n\n*Synthesis failed: ${err.message}*\n\n## Raw Findings\n\n${findings}`;
   }

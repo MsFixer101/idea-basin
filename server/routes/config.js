@@ -52,12 +52,14 @@ router.get('/status', async (req, res) => {
       status.embedded = await getStatus();
     } catch { /* embedded model not available yet */ }
 
-    // Check Claude CLI
+    // Check model-service (replaces direct Claude CLI)
     try {
-      execFileSync('which', ['claude'], { timeout: 2000 });
-      status.claudeCli = { available: true };
+      const msResp = await fetch('http://localhost:4000/health', { signal: AbortSignal.timeout(2000) });
+      const msData = await msResp.json();
+      const cliProvider = msData.providers?.find(p => p.name === 'cli-tools');
+      status.claudeCli = { available: cliProvider?.available || false, via: 'model-service' };
     } catch {
-      status.claudeCli = { available: false };
+      status.claudeCli = { available: false, via: 'model-service' };
     }
 
     res.json(status);
