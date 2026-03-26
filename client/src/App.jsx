@@ -22,6 +22,7 @@ export default function App() {
   const [selectedCrossRefs, setSelectedCrossRefs] = useState([]);
   const [alsoInMap, setAlsoInMap] = useState({});
   const [showAddNode, setShowAddNode] = useState(false);
+  const [showAddResource, setShowAddResource] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMoveConfirm, setShowMoveConfirm] = useState(null);
@@ -544,7 +545,7 @@ export default function App() {
             padding: '5px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontFamily: 'inherit',
             ...(mobile ? { flex: 1 } : {}),
           }}>+ Node</button>
-          <button style={{
+          <button onClick={() => selectedChild && setShowAddResource(true)} style={{
             background: selectedChild ? 'linear-gradient(135deg, #7c3aed, #6d28d9)' : theme.bg.card,
             border: 'none', color: selectedChild ? '#fff' : theme.text.dim,
             padding: '5px 12px', borderRadius: 6,
@@ -632,6 +633,8 @@ export default function App() {
             crossRefs={selectedCrossRefs}
             alsoInMap={alsoInMap}
             onAddResource={handleAddResource}
+            externalShowAdd={showAddResource}
+            onExternalShowAddConsumed={() => setShowAddResource(false)}
             onAddChildNode={handleAddChildNode}
             onCreateCrossRef={handleCreateCrossRef}
             onDeleteCrossRef={handleDeleteCrossRef}

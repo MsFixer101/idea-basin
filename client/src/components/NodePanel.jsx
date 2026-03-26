@@ -207,7 +207,7 @@ function SectionHeader({ children, count }) {
 
 // ── NodePanel ──────────────────────────────────────────────────────────
 
-export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAddResource, onAddChildNode, onCreateCrossRef, onDeleteCrossRef, onRefresh, onDelete, onMerge, onNavigate, onNavigateToPanel, siblings }) {
+export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAddResource, onAddChildNode, onCreateCrossRef, onDeleteCrossRef, onRefresh, onDelete, onMerge, onNavigate, onNavigateToPanel, siblings, externalShowAdd, onExternalShowAddConsumed }) {
   const [showAdd, setShowAdd] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [showAddChild, setShowAddChild] = useState(false);
@@ -236,6 +236,13 @@ export default function NodePanel({ node, resources, crossRefs, alsoInMap, onAdd
   const [recentResources, setRecentResources] = useState([]);
   const actionsMenuRef = useRef(null);
   const searchTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (externalShowAdd) {
+      setShowAdd(true);
+      onExternalShowAddConsumed?.();
+    }
+  }, [externalShowAdd, onExternalShowAddConsumed]);
 
   const isScrapNode = node?.id === SCRAP_NODE_ID;
 
