@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as db from '../db/queries.js';
-import { scrape, scrapeYouTube, scrapeGitHub, scrapeArxiv, checkAuthWalled } from '../services/scraper.js';
+import { scrape, scrapeYouTube, scrapeGitHub, scrapeArxiv, checkAuthWalled, extractThumbnailUrl, extractOgImage } from '../services/scraper.js';
 import { chunk } from '../services/chunker.js';
 import { embed } from '../services/embedder.js';
 import { generateTags, generateSummary } from '../services/tagger.js';
@@ -110,6 +110,18 @@ export async function ingest(resourceId) {
         break;
       default:
         rawContent = await scrape(resource.url);
+    }
+
+    // Extract thumbnail (YouTube = instant, others = og:image fetch)
+    if (!resource.thumbnail_url) {
+      let thumb = extractThumbnailUrl(resource.url);
+      if (!thumb) {
+        try { thumb = await extractOgImage(resource.url); } catch {}
+      }
+      if (thumb) {
+        await db.updateResource(resourceId, { thumbnail_url: thumb });
+        console.log(`[ingest] Thumbnail: ${thumb}`);
+      }
     }
 
     // If scrape returned very little, still mark as ready with what we have

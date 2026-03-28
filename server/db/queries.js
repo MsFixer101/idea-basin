@@ -186,11 +186,11 @@ export async function getResource(id) {
   return rows[0] || null;
 }
 
-export async function createResource({ node_id, url, type, why, description, content, status }) {
+export async function createResource({ node_id, url, type, why, description, content, status, thumbnail_url }) {
   const { rows } = await pool.query(
-    `INSERT INTO resources (node_id, url, type, why, description, content, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [node_id, url || null, type, why || null, description || null, content || null, status || 'pending']
+    `INSERT INTO resources (node_id, url, type, why, description, content, status, thumbnail_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [node_id, url || null, type, why || null, description || null, content || null, status || 'pending', thumbnail_url || null]
   );
   return rows[0];
 }
@@ -200,7 +200,7 @@ export async function updateResource(id, fields) {
   const vals = [];
   let i = 1;
   for (const [key, val] of Object.entries(fields)) {
-    if (['node_id', 'url', 'type', 'why', 'description', 'raw_content', 'content', 'status'].includes(key)) {
+    if (['node_id', 'url', 'type', 'why', 'description', 'raw_content', 'content', 'status', 'thumbnail_url'].includes(key)) {
       sets.push(`${key} = $${i++}`);
       vals.push(val);
     }

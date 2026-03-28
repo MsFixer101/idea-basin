@@ -77,6 +77,40 @@ export async function scrape(url) {
   }
 }
 
+// ── Thumbnail extraction ──────────────────────────────────────────────
+
+export function extractYouTubeThumbnail(url) {
+  const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
+  return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : null;
+}
+
+export async function extractOgImage(url) {
+  try {
+    const response = await fetch(url, {
+      headers: BROWSER_HEADERS,
+      signal: AbortSignal.timeout(10000),
+      redirect: 'follow',
+    });
+    if (!response.ok) return null;
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/html')) return null;
+    const html = await response.text();
+    const $ = cheerio.load(html);
+    const ogImage = $('meta[property="og:image"]').attr('content')
+      || $('meta[name="twitter:image"]').attr('content');
+    return ogImage || null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractThumbnailUrl(url) {
+  // YouTube: predictable URL, no fetch needed
+  const ytThumb = extractYouTubeThumbnail(url);
+  if (ytThumb) return ytThumb;
+  return null;
+}
+
 export async function scrapeYouTube(url) {
   // Try transcript first
   try {

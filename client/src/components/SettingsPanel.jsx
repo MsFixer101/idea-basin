@@ -445,6 +445,11 @@ export default function SettingsPanel({ onClose }) {
   function handleFeatureChange(feature, encoded) {
     const [provider, ...rest] = encoded.split(':');
     const model = rest.join(':');
+    if (provider === 'claude-cli') {
+      if (!window.confirm(`Switch ${feature} to Claude CLI?\n\nThis uses your Claude usage limits. Every resource ingested will count against your quota.\n\nFor bulk operations, consider embedded (lightweight, no GPU) or disabling this feature.`)) return;
+    } else if (provider.startsWith('ollama')) {
+      if (!window.confirm(`Switch ${feature} to Ollama?\n\nOllama runs locally but uses significant GPU/memory. Bulk imports (e.g. 200+ resources) will queue and may slow your machine.\n\nConsider embedded (lightweight) for bulk operations, or disable this feature during large imports.`)) return;
+    }
     saveFeature(feature, provider, model);
   }
 
@@ -524,6 +529,16 @@ export default function SettingsPanel({ onClose }) {
                   </optgroup>
                 ))}
               </select>
+              {current.startsWith('claude-cli') && (
+                <div style={{ marginTop: 6, padding: '6px 10px', borderRadius: 6, background: 'rgba(251, 191, 36, 0.12)', border: '1px solid rgba(251, 191, 36, 0.3)', fontSize: 11, color: '#fbbf24', lineHeight: 1.4 }}>
+                  Claude CLI uses your Claude usage limits. Every resource ingested counts against your quota. Consider embedded for bulk operations.
+                </div>
+              )}
+              {current.startsWith('ollama') && (
+                <div style={{ marginTop: 6, padding: '6px 10px', borderRadius: 6, background: 'rgba(96, 165, 250, 0.12)', border: '1px solid rgba(96, 165, 250, 0.3)', fontSize: 11, color: '#60a5fa', lineHeight: 1.4 }}>
+                  Ollama runs locally but uses GPU/memory. Bulk imports will queue and may slow your machine.
+                </div>
+              )}
             </div>
           );
         })}

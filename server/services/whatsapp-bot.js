@@ -1007,6 +1007,8 @@ async function handleMessage(msg, groupJid, mode = 'full') {
 
   // ── Featured image / push flow confirmations ──
   // Support both quoted replies and plain yes/no (match most recent pending question)
+  // BUT: explicit @commands always take priority over pending flows
+  const isExplicitCommand = /^(@save|@memory|@basin|@subbasin|@blog|@publish|@push|\/basins|\/subbasins|\/morning)\b/i.test(text.trim());
   const quotedId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
   const shortAnswer = /^(yes|y|ok|no|n|nah)$/i.test(text.trim());
 
@@ -1014,8 +1016,9 @@ async function handleMessage(msg, groupJid, mode = 'full') {
   let featuredMatch = quotedId && pendingFeaturedImage.has(quotedId) ? quotedId : null;
   let pushMatch = quotedId && pendingPushFlows.has(quotedId) ? quotedId : null;
 
-  if (!featuredMatch && !pushMatch) {
+  if (!featuredMatch && !pushMatch && !isExplicitCommand) {
     // No quoted reply — try to match most recent pending question
+    // Skip if this is an explicit @command (commands always take priority)
     const latestFeatured = [...pendingFeaturedImage.entries()].pop();
     const latestPush = [...pendingPushFlows.entries()].pop();
     // For metadata confirm, accept any text; for other states, require short answer

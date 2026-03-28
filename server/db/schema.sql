@@ -24,6 +24,7 @@ CREATE TABLE resources (
   description TEXT,
   raw_content TEXT,
   content TEXT,
+  thumbnail_url TEXT,
   status VARCHAR(20) DEFAULT 'pending',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()

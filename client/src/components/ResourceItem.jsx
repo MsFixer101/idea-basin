@@ -256,6 +256,21 @@ export default function ResourceItem({ item, onRefresh, alsoIn, onNavigateToPane
         </div>
       )}
 
+      {/* Link thumbnail (og:image / YouTube) */}
+      {!isImage && item.thumbnail_url && (
+        <div style={{ marginTop: 6, marginLeft: 22, borderRadius: 6, overflow: 'hidden' }}>
+          <img
+            src={item.thumbnail_url}
+            alt=""
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            style={{
+              width: '100%', maxHeight: 100, objectFit: 'cover', display: 'block',
+              borderRadius: 6, background: '#0d0b1a',
+            }}
+          />
+        </div>
+      )}
+
       {/* Image lightbox overlay */}
       {lightbox && (
         <div

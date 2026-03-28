@@ -18,6 +18,7 @@ import chatRouter from './routes/chat.js';
 import whatsappRouter from './routes/whatsapp.js';
 import briefingRouter from './routes/briefing.js';
 import memoryRouter from './routes/memory.js';
+import transcribeRouter from './routes/transcribe.js';
 import pool from './db/pool.js';
 import { startBot } from './services/whatsapp-bot.js';
 import { startScheduler } from './services/morning-briefing.js';
@@ -59,6 +60,7 @@ app.use('/api/chat', chatRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/briefing', briefingRouter);
 app.use('/api/memory', memoryRouter);
+app.use('/api/transcribe', transcribeRouter);
 
 // Serve uploaded images
 app.use('/uploads', express.static(UPLOADS_DIR));
@@ -115,9 +117,11 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// SPA fallback — serve index.html for non-API routes
+// SPA fallback — serve index.html for non-API routes (skip files that exist in dist)
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/')) return next();
+  // Let static files through (e.g. transcribe.html)
+  if (req.path !== '/' && req.path.includes('.')) return next();
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(join(CLIENT_DIST, 'index.html'));
 });
