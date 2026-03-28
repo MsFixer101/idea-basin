@@ -175,6 +175,23 @@ async function migrate() {
     await pool.query(`
       ALTER TABLE nodes ADD COLUMN IF NOT EXISTS private boolean DEFAULT false
     `);
+    // WhatsApp message persistence — store full conversation threads
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        group_jid TEXT NOT NULL,
+        message_id TEXT,
+        sender TEXT,
+        sender_name TEXT,
+        text TEXT,
+        media_type TEXT,
+        is_bot BOOLEAN DEFAULT false,
+        msg_timestamp TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_wa_messages_group_ts ON whatsapp_messages(group_jid, msg_timestamp DESC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_wa_messages_msgid ON whatsapp_messages(message_id)`);
   } catch (err) {
     // Column may already exist — safe to ignore
     if (!err.message.includes('already exists')) {

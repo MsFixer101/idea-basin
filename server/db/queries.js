@@ -432,6 +432,115 @@ export async function getPrivateNodeIds() {
   return new Set(rows.map(r => r.id));
 }
 
+// ── WhatsApp messages ─────────────────────────────────────────────────
+
+export async function saveWhatsAppMessage({ group_jid, message_id, sender, sender_name, text, media_type, is_bot, msg_timestamp }) {
+  // Upsert by message_id to handle history sync duplicates
+  if (message_id) {
+    const { rowCount } = await pool.query(
+      'SELECT 1 FROM whatsapp_messages WHERE message_id = $1', [message_id]
+    );
+    if (rowCount > 0) return null; // already stored
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO whatsapp_messages (group_jid, message_id, sender, sender_name, text, media_type, is_bot, msg_timestamp)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id`,
+    [group_jid, message_id, sender, sender_name, text, media_type || null, is_bot || false, msg_timestamp || new Date()]
+  );
+  return rows[0];
+}
+
+export async function saveWhatsAppMessagesBatch(messages) {
+  if (!messages.length) return 0;
+  // Filter out messages we already have by message_id
+  const msgIds = messages.filter(m => m.message_id).map(m => m.message_id);
+  let existing = new Set();
+  if (msgIds.length > 0) {
+    const { rows } = await pool.query(
+      'SELECT message_id FROM whatsapp_messages WHERE message_id = ANY($1)',
+      [msgIds]
+    );
+    existing = new Set(rows.map(r => r.message_id));
+  }
+  const toInsert = messages.filter(m => !m.message_id || !existing.has(m.message_id));
+  if (!toInsert.length) return 0;
+
+  // Batch insert
+  const values = [];
+  const params = [];
+  let idx = 1;
+  for (const m of toInsert) {
+    values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+    params.push(m.group_jid, m.message_id, m.sender, m.sender_name, m.text, m.media_type || null, m.is_bot || false, m.msg_timestamp || new Date());
+  }
+  await pool.query(
+    `INSERT INTO whatsapp_messages (group_jid, message_id, sender, sender_name, text, media_type, is_bot, msg_timestamp)
+     VALUES ${values.join(', ')}`,
+    params
+  );
+  return toInsert.length;
+}
+
+export async function getWhatsAppMessages(groupJid, { limit = 50, before = null, after = null } = {}) {
+  let query = 'SELECT * FROM whatsapp_messages WHERE group_jid = $1';
+  const params = [groupJid];
+  let idx = 2;
+
+  if (before) {
+    query += ` AND msg_timestamp < $${idx++}`;
+    params.push(before);
+  }
+  if (after) {
+    query += ` AND msg_timestamp > $${idx++}`;
+    params.push(after);
+  }
+
+  query += ` ORDER BY msg_timestamp DESC LIMIT $${idx}`;
+  params.push(limit);
+
+  const { rows } = await pool.query(query, params);
+  return rows.reverse(); // chronological order
+}
+
+export async function searchWhatsAppMessages(query, { groupJid = null, limit = 20 } = {}) {
+  let sql = `SELECT * FROM whatsapp_messages WHERE text ILIKE $1`;
+  const params = [`%${query}%`];
+  let idx = 2;
+
+  if (groupJid) {
+    sql += ` AND group_jid = $${idx++}`;
+    params.push(groupJid);
+  }
+
+  sql += ` ORDER BY msg_timestamp DESC LIMIT $${idx}`;
+  params.push(limit);
+
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
+export async function getWhatsAppMessageByMsgId(messageId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM whatsapp_messages WHERE message_id = $1',
+    [messageId]
+  );
+  return rows[0] || null;
+}
+
+export async function getWhatsAppThreadStats(groupJid) {
+  const { rows } = await pool.query(`
+    SELECT
+      count(*)::int as total_messages,
+      min(msg_timestamp) as earliest,
+      max(msg_timestamp) as latest,
+      count(DISTINCT sender)::int as unique_senders
+    FROM whatsapp_messages
+    WHERE group_jid = $1
+  `, [groupJid]);
+  return rows[0];
+}
+
 export async function getSuggestedCrossRefs() {
   const { rows } = await pool.query(`
     SELECT DISTINCT r1.node_id as source_node_id, r2.node_id as target_node_id,

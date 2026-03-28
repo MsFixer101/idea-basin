@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { getStatus, startBot, stopBot, disconnectBot, refreshGroups, sendToGroup, sendImageToGroup, addPendingImageApproval } from '../services/whatsapp-bot.js';
+import { getStatus, startBot, stopBot, disconnectBot, refreshGroups, sendToGroup, sendImageToGroup, addPendingImageApproval, fetchOlderMessages } from '../services/whatsapp-bot.js';
 import { get as getConfig, save as saveConfig } from '../services/config.js';
+import { getWhatsAppMessages, searchWhatsAppMessages, getWhatsAppThreadStats } from '../db/queries.js';
 
 const router = Router();
 
@@ -170,6 +171,77 @@ router.post('/send-message', async (req, res) => {
     res.json({ success: true, messageId: sent.key.id });
   } catch (err) {
     console.error('[whatsapp] send-message failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/whatsapp/fetch-history — request older messages from WhatsApp servers
+router.post('/fetch-history', async (req, res) => {
+  try {
+    const cfg = await getConfig('whatsapp') || {};
+    const groupMap = { main: cfg.groupJid, blog: cfg.blogGroupJid, chat: cfg.chatGroupJid };
+    const groupJid = groupMap[req.body.group] || req.body.group || cfg.groupJid;
+    if (!groupJid) return res.status(400).json({ error: 'No group specified' });
+
+    const result = await fetchOlderMessages(groupJid);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Thread history (for Claude CLI + local MLX models) ──────────────
+
+// GET /api/whatsapp/messages — paginated thread history
+// Query params: group (main|chat|blog or raw JID), limit, before, after, search
+router.get('/messages', async (req, res) => {
+  try {
+    const cfg = await getConfig('whatsapp') || {};
+    const groupMap = {
+      main: cfg.groupJid,
+      blog: cfg.blogGroupJid,
+      chat: cfg.chatGroupJid,
+    };
+
+    const groupJid = groupMap[req.query.group] || req.query.group || cfg.groupJid;
+    if (!groupJid) return res.status(400).json({ error: 'No group specified or configured' });
+
+    if (req.query.search) {
+      const results = await searchWhatsAppMessages(req.query.search, {
+        groupJid,
+        limit: parseInt(req.query.limit) || 20,
+      });
+      return res.json({ messages: results, group: groupJid });
+    }
+
+    const messages = await getWhatsAppMessages(groupJid, {
+      limit: parseInt(req.query.limit) || 50,
+      before: req.query.before || null,
+      after: req.query.after || null,
+    });
+
+    res.json({ messages, group: groupJid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/whatsapp/thread-stats — summary stats for a group thread
+router.get('/thread-stats', async (req, res) => {
+  try {
+    const cfg = await getConfig('whatsapp') || {};
+    const groupMap = {
+      main: cfg.groupJid,
+      blog: cfg.blogGroupJid,
+      chat: cfg.chatGroupJid,
+    };
+    const groupJid = groupMap[req.query.group] || req.query.group || cfg.groupJid;
+    if (!groupJid) return res.status(400).json({ error: 'No group specified or configured' });
+
+    const stats = await getWhatsAppThreadStats(groupJid);
+    res.json({ ...stats, group: groupJid });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

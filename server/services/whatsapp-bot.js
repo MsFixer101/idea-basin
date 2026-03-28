@@ -28,7 +28,7 @@ async function callModelService(prompt, system) {
 }
 import { scrape, extractThumbnailUrl } from './scraper.js';
 import { embed } from './embedder.js';
-import { searchChunks, createResource, updateResource, createNode, getRootNode, getNodeDeep, getResourcesForNode, getPrivateNodeIds } from '../db/queries.js';
+import { searchChunks, createResource, updateResource, createNode, getRootNode, getNodeDeep, getResourcesForNode, getPrivateNodeIds, saveWhatsAppMessage, saveWhatsAppMessagesBatch, getWhatsAppMessageByMsgId } from '../db/queries.js';
 import { ingest } from '../workers/ingest.js';
 import pool from '../db/pool.js';
 import { performSearch } from './web-search.js';
@@ -774,10 +774,12 @@ async function getNodeList() {
   if (!root) return [];
 
   const tree = await getNodeDeep(root.id, 2);
+  const privateIds = await getPrivateNodeIds();
   const nodes = [];
 
   function walk(node, depth) {
     if (!node) return;
+    if (privateIds.has(node.id)) return; // skip private nodes and their children
     if (node.id !== root.id && node.id !== WHATSAPP_CAPTURES_ID) {
       nodes.push({ id: node.id, label: node.label, depth });
     }
@@ -1565,8 +1567,9 @@ async function handleMessage(msg, groupJid, mode = 'full') {
     try {
       const root = await getRootNode();
       const tree = await getNodeDeep(root.id, 2);
+      const privateIds = await getPrivateNodeIds();
       const children = (tree.children || []).filter(
-        c => c.id !== WHATSAPP_CAPTURES_ID && c.id !== '00000000-0000-0000-0000-000000000080'
+        c => c.id !== WHATSAPP_CAPTURES_ID && c.id !== '00000000-0000-0000-0000-000000000080' && !privateIds.has(c.id)
       );
       if (children.length === 0) {
         await sendReply(jid, msg, '*System:* No basins yet. Create one with *@basin <name>*');
@@ -1576,7 +1579,7 @@ async function handleMessage(msg, groupJid, mode = 'full') {
           const count = c.resource_count ?? '';
           reply += `\n${i + 1}. ${c.label}${count ? ` (${count})` : ''}`;
           if (showSubs && c.children) {
-            c.children.forEach(sub => {
+            c.children.filter(sub => !privateIds.has(sub.id)).forEach(sub => {
               const subCount = sub.resource_count ?? '';
               reply += `\n   └ ${sub.label}${subCount ? ` (${subCount})` : ''}`;
             });
@@ -2215,7 +2218,14 @@ async function connectBot(groupJid, chatGroupJid) {
     },
     logger,
     markOnlineOnConnect: false,
-    getMessage: async () => undefined,
+    syncFullHistory: true,
+    getMessage: async (key) => {
+      // Look up message content from DB for retry/decryption
+      if (!key?.id) return undefined;
+      const row = await getWhatsAppMessageByMsgId(key.id).catch(() => null);
+      if (row?.text) return { conversation: row.text };
+      return undefined;
+    },
     ...(version && { version }),
   });
 
@@ -2296,12 +2306,98 @@ async function connectBot(groupJid, chatGroupJid) {
       }
     }
 
+    // ── History sync — capture historical messages on connect ──────────
+    if (events['messaging-history.set']) {
+      const { messages: histMsgs, progress, isLatest } = events['messaging-history.set'];
+      if (histMsgs?.length) {
+        const targetJids = new Set([groupJid, chatGroupJid, blogGroupJid].filter(Boolean));
+        const batch = [];
+        for (const m of histMsgs) {
+          const jid = m.key?.remoteJid;
+          if (!jid || !targetJids.has(jid)) continue; // only persist messages from our configured groups
+
+          const msgText = m.message?.conversation
+            || m.message?.extendedTextMessage?.text
+            || m.message?.imageMessage?.caption
+            || m.message?.videoMessage?.caption
+            || '';
+          const mediaType = m.message?.imageMessage ? 'image'
+            : m.message?.videoMessage ? 'video'
+            : m.message?.audioMessage ? 'audio'
+            : m.message?.documentMessage ? 'document'
+            : null;
+
+          if (!msgText.trim() && !mediaType) continue; // skip empty
+
+          const sender = m.key.participant || m.key.remoteJid;
+          const senderName = m.pushName || sender;
+          const ts = m.messageTimestamp
+            ? new Date(typeof m.messageTimestamp === 'number' ? m.messageTimestamp * 1000 : Number(m.messageTimestamp) * 1000)
+            : new Date();
+
+          batch.push({
+            group_jid: jid,
+            message_id: m.key?.id || null,
+            sender,
+            sender_name: senderName,
+            text: msgText.slice(0, 10000),
+            media_type: mediaType,
+            is_bot: m.key?.fromMe || false,
+            msg_timestamp: ts,
+          });
+        }
+        if (batch.length > 0) {
+          const inserted = await saveWhatsAppMessagesBatch(batch).catch(err => {
+            console.error('[whatsapp] History batch save error:', err.message);
+            return 0;
+          });
+          console.log(`[whatsapp] History sync: ${inserted} new messages saved (batch ${batch.length}, progress: ${progress ?? '?'}%, latest: ${isLatest ?? '?'})`);
+        }
+      }
+    }
+
     if (events['messages.upsert']) {
       const { messages, type } = events['messages.upsert'];
 
       for (const m of messages) {
-        if (type !== 'notify') continue;
         const jid = m.key?.remoteJid;
+
+        // ── Persist every message to DB (both notify and append) ──────
+        if (jid) {
+          const msgText = m.message?.conversation
+            || m.message?.extendedTextMessage?.text
+            || m.message?.imageMessage?.caption
+            || m.message?.videoMessage?.caption
+            || '';
+          const mediaType = m.message?.imageMessage ? 'image'
+            : m.message?.videoMessage ? 'video'
+            : m.message?.audioMessage ? 'audio'
+            : m.message?.documentMessage ? 'document'
+            : null;
+
+          if (msgText.trim() || mediaType) {
+            const sender = m.key.participant || m.key.remoteJid;
+            const senderName = m.pushName || sender;
+            const isBotMsg = sentByBot.has(m.key?.id) || m.key?.fromMe || false;
+            const ts = m.messageTimestamp
+              ? new Date(typeof m.messageTimestamp === 'number' ? m.messageTimestamp * 1000 : Number(m.messageTimestamp) * 1000)
+              : new Date();
+
+            saveWhatsAppMessage({
+              group_jid: jid,
+              message_id: m.key?.id || null,
+              sender,
+              sender_name: senderName,
+              text: msgText.slice(0, 10000),
+              media_type: mediaType,
+              is_bot: isBotMsg,
+              msg_timestamp: ts,
+            }).catch(err => console.error('[whatsapp] Message save error:', err.message));
+          }
+        }
+
+        // ── Real-time handling (notify only) ─────────────────────────
+        if (type !== 'notify') continue;
 
         // Record incoming message in history buffer (skip bot's own messages)
         if (jid && !sentByBot.has(m.key?.id)) {
@@ -2365,6 +2461,35 @@ export async function refreshGroups() {
     console.error('[whatsapp] Failed to refresh groups:', err.message);
   }
   return botState.groups;
+}
+
+export async function fetchOlderMessages(groupJid) {
+  if (!sock || botState.status !== 'connected') {
+    return { error: 'Bot not connected' };
+  }
+
+  // Find oldest message we have for this group
+  const { rows } = await pool.query(
+    'SELECT message_id, msg_timestamp FROM whatsapp_messages WHERE group_jid = $1 ORDER BY msg_timestamp ASC LIMIT 1',
+    [groupJid]
+  );
+
+  if (!rows.length) {
+    return { error: 'No messages found for this group — need at least one message to paginate from' };
+  }
+
+  const oldest = rows[0];
+  const ts = Math.floor(new Date(oldest.msg_timestamp).getTime() / 1000);
+
+  console.log(`[whatsapp] Fetching older messages before ${oldest.msg_timestamp} (key: ${oldest.message_id})`);
+
+  try {
+    await sock.fetchMessageHistory(50, { id: oldest.message_id, remoteJid: groupJid }, ts);
+    return { status: 'requested', before: oldest.msg_timestamp, message_id: oldest.message_id };
+  } catch (err) {
+    console.error('[whatsapp] fetchMessageHistory error:', err.message);
+    return { error: err.message };
+  }
 }
 
 export async function disconnectBot() {
